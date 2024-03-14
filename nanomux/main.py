@@ -221,13 +221,15 @@ def cli():
     parser.add_argument(
         "-fw",
         "--forward",
-        required=True,
+        required=False,
+        default="",
         help="List of forward barcodes. [EXAMPLE]: `-fw F1,F2,F3`",
     )
     parser.add_argument(
         "-rv",
         "--reverse",
-        required=True,
+        required=False,
+        default="",
         help="List of reverse barcodes. [EXAMPLE]: `-fw R1,R2,R3`",
     )
     parser.add_argument(
@@ -247,6 +249,9 @@ def cli():
     )
 
     args = parser.parse_args()
+    command = "\nnanomux \n" + "".join(f"{k}: {v}\n" for k, v in vars(args).items())
+    print_green(command)
+
 
     main(
         fastq=args.fastq,
@@ -289,6 +294,9 @@ def process_fastx_file(fastx):
 
 
 def process_barcodes(barcode, forward, reverse):
+    if forward == "" and reverse == "":
+        return pd.read_csv(barcode)
+    
     try:
         barcodes_raw = pd.read_csv(barcode)
     except:
