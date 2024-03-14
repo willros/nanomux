@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import regex
 import argparse
+from functools import partial
 
 BC_LEN = 16
 FIND_BARCODE_WITHIN = (0, 300)
@@ -35,8 +36,6 @@ def print_fail(text):
 
 def print_blue(text):
     print(f"{bcolors.OKBLUE}[SUMMARIZE]: {text}{bcolors.ENDC}")
-
-
 
 
 def fastx_file_to_df(fastx_file: str) -> pd.DataFrame:
@@ -93,7 +92,11 @@ def fuzzy_match(sequence: str, mismatch_pattern: str, allowed_mismatch: int) -> 
     match = regex.search(mismatch_pattern, sequence)
     if not match:
         return -1
-    return match.start()
+    try:
+        return int(match.start())
+    except:
+        print_fail("{match.start()} is not an integer")
+        sys.exit(1)
 
 
 def find_duplex_barcodes_fuzzy(df, fw, rv, allowed_mismatches: int):
@@ -108,17 +111,17 @@ def find_duplex_barcodes_fuzzy(df, fw, rv, allowed_mismatches: int):
     mismatch_rv_rc = f"({rv_rc}){{e<={allowed_mismatches}}}"
 
     fw_rv = (
-        df.assign(fw=lambda x: [fuzzy_match(y, mismatch_fw) for y in x.sequence])
+        df.assign(fw=lambda x: [fuzzy_match(y, mismatch_fw, allowed_mismatches) for y in x.sequence])
         .loc[lambda x: x.fw.between(*FIND_BARCODE_WITHIN)]
-        .assign(rv=lambda x: [fuzzy_match(y, mismatch_rv_rc) for y in x.sequence])
+        .assign(rv=lambda x: [fuzzy_match(y, mismatch_rv_rc, allowed_mismatches) for y in x.sequence])
         .loc[lambda x: x.rv != -1]
         .assign(type="forward")
     )
 
     rv_fw = (
-        df.assign(fw=lambda x: [fuzzy_match(y, mismatch_rv) for y in x.sequence])
+        df.assign(fw=lambda x: [fuzzy_match(y, mismatch_rv, allowed_mismatches) for y in x.sequence])
         .loc[lambda x: x.fw.between(*FIND_BARCODE_WITHIN)]
-        .assign(rv=lambda x: [fuzzy_match(y, mismatch_fw_rc) for y in x.sequence])
+        .assign(rv=lambda x: [fuzzy_match(y, mismatch_fw_rc, allowed_mismatches) for y in x.sequence])
         .loc[lambda x: x.rv != -1]
         .assign(type="reverse")
     )
@@ -133,11 +136,10 @@ def trim_barcodes(df):
     return (
         df.assign(
             sequence=lambda x: [
-                y.sequence[y.fw + BC_LEN : y.rv + 1] for y in x.itertuples()
+                y.sequence[int(y.fw) + BC_LEN : int(y.rv) + 1] for y in x.itertuples()
             ]
-        )
-        .assign(trimmed_len=lambda x: x.sequence.str.len())
-        #.loc[lambda x: x.trimmed_len.between(1400, 1700)]
+        ).assign(trimmed_len=lambda x: x.sequence.str.len())
+        # .loc[lambda x: x.trimmed_len.between(1400, 1700)]
         .drop(columns=["fw", "rv"])
     )
 
@@ -194,10 +196,12 @@ def write_fastx_from_all_sample_in_df(df, out_folder):
         out_file = out_folder / name
         write_fastx_from_df(subset, out_file)
 
+
 def make_dir(outpath: str) -> None:
     outpath = Path(outpath)
     if not outpath.exists():
         outpath.mkdir(parents=True)
+
 
 def cli():
     parser = argparse.ArgumentParser(description="Demultiplex your Nanopore reads!")
@@ -241,10 +245,9 @@ def cli():
         default=2,
         help="If fuzzy, how many mismatches are allowed? [DEFAULT]: 2",
     )
-    
+
     args = parser.parse_args()
 
-    
     main(
         fastq=args.fastq,
         output=args.output,
@@ -260,61 +263,63 @@ def file_exists(file):
     if not Path(file).exists():
         print_fail(f"{file} does not exist!")
         sys.exit(1)
-        
+
+
 def folder_exists(folder):
     if Path(folder).exists():
         print_fail(f"{folder} already exist!")
         sys.exit(1)
-        
-    
+
+
 def process_fastx_file(fastx):
     fastq_df = fastx_file_to_df(fastx)
     print_blue(f"Number of raw sequences in {fastx}: {fastq_df.shape[0]}")
-    
+
     fastq_df = fastq_df.pipe(filter_16s_reads_by_len)
-    
+
     if fastq_df.shape[0] == 0:
         print_fail("No reads left after filtering for lenght")
         sys.exit(1)
-        
-    print_blue(f"Number of sequences between {READ_LEN_MIN}bp and {READ_LEN_MAX}bp: {fastq_df.shape[0]}")
-    
+
+    print_blue(
+        f"Number of sequences between {READ_LEN_MIN}bp and {READ_LEN_MAX}bp: {fastq_df.shape[0]}"
+    )
+
     return fastq_df
-    
-    
+
+
 def process_barcodes(barcode, forward, reverse):
     try:
         barcodes_raw = pd.read_csv(barcode)
     except:
         print_fail(f"{barcode} is not a valid .csv file")
         sys.exit(1)
-    
+
     try:
         fwd_barcodes = forward.split(",")
     except:
         print_fail(f"{forward} are not valid.")
         sys.exit(1)
-        
+
     try:
         rv_barcodes = reverse.split(",")
     except:
         print_fail(f"{reverse} are not valid.")
         sys.exit(1)
-        
+
     try:
-        barcodes_filtered = used_barcodes(
-            barcodes_raw, fwd_barcodes, rv_barcodes
-        )
+        barcodes_filtered = used_barcodes(barcodes_raw, fwd_barcodes, rv_barcodes)
     except:
         print_fail("Something went wrong when filtering for barcodes.")
         sys.exit(1)
-    
+
     if barcodes_filtered.shape[0] == 0:
         print_fail("No barcodes left after filtering for barcodes.")
         sys.exit(1)
-        
+
     return barcodes_filtered
-    
+
+
 def main(
     fastq,
     output,
@@ -328,19 +333,20 @@ def main(
     file_exists(fastq)
     folder_exists(output)
     make_dir(output)
-    
+
     print_green("Processing fastq")
     fastq_df = process_fastx_file(fastq)
-    
 
     print_green("Processing barcodes")
     barcodes_filtered = process_barcodes(barcode, forward, reverse)
 
-
-    duplex_barcode_function = find_duplex_barcodes_greedy if mode == "greedy" else find_duplex_barcodes_fuzzy
+    duplex_barcode_function = (
+        find_duplex_barcodes_greedy
+        if mode == "greedy"
+        else partial(find_duplex_barcodes_fuzzy, allowed_mismatches=mismatch)
+    )
     demuxed_df = demux_all_samples(fastq_df, barcodes_filtered, duplex_barcode_function)
-    
-    
+
     print_blue(f"Number of sequences with barcodes: {demuxed_df.shape[0]}")
 
     print_green(f"Saving fasta files into: {output}")
@@ -351,4 +357,3 @@ def main(
 if __name__ == "__main__":
     cli()
     sys.exit(0)
-
