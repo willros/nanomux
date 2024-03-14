@@ -157,7 +157,7 @@ def demux_all_samples(read_df, barcode_df, duplex_barcodes: callable):
         ).pipe(trim_barcodes)
 
         if sample_df.shape[0] == 0:
-            print_blue(f"NO BARCODES FOUND FOR: {sample.name}")
+            print_warning(f"NO BARCODES FOUND FOR: {sample.name}")
             continue
 
         print_blue(f"Barcodes found for {sample.name}: {sample_df.shape[0]}")
@@ -170,7 +170,7 @@ def demux_all_samples(read_df, barcode_df, duplex_barcodes: callable):
         df = pd.concat(reads_demuxed_list, ignore_index=True)
         return df
     except:
-        print_error("No samples were found!")
+        print_fail("No samples were found!")
         sys.exit(1)
 
 
@@ -215,13 +215,13 @@ def cli():
         help=".csv files with barcodes",
     )
     parser.add_argument(
-        "-f",
+        "-fw",
         "--forward",
         required=True,
         help="List of forward barcodes. [EXAMPLE]: `-fw F1,F2,F3`",
     )
     parser.add_argument(
-        "-r",
+        "-rv",
         "--reverse",
         required=True,
         help="List of reverse barcodes. [EXAMPLE]: `-fw R1,R2,R3`",
@@ -258,12 +258,12 @@ def cli():
 
 def file_exists(file):
     if not Path(file).exists():
-        print_error(f"{file} does not exist!")
+        print_fail(f"{file} does not exist!")
         sys.exit(1)
         
 def folder_exists(folder):
     if Path(folder).exists():
-        print_error(f"{folder} already exist!")
+        print_fail(f"{folder} already exist!")
         sys.exit(1)
         
     
@@ -274,7 +274,7 @@ def process_fastx_file(fastx):
     fastq_df = fastq_df.pipe(filter_16s_reads_by_len)
     
     if fastq_df.shape[0] == 0:
-        print_error("No reads left after filtering for lenght")
+        print_fail("No reads left after filtering for lenght")
         sys.exit(1)
         
     print_blue(f"Number of sequences between {READ_LEN_MIN}bp and {READ_LEN_MAX}bp: {fastq_df.shape[0]}")
@@ -286,19 +286,19 @@ def process_barcodes(barcode, forward, reverse):
     try:
         barcodes_raw = pd.read_csv(barcode)
     except:
-        print_error(f"{barcode} is not a valid .csv file")
+        print_fail(f"{barcode} is not a valid .csv file")
         sys.exit(1)
     
     try:
         fwd_barcodes = forward.split(",")
     except:
-        print_error(f"{forward} are not valid.")
+        print_fail(f"{forward} are not valid.")
         sys.exit(1)
         
     try:
         rv_barcodes = reverse.split(",")
     except:
-        print_error(f"{reverse} are not valid.")
+        print_fail(f"{reverse} are not valid.")
         sys.exit(1)
         
     try:
@@ -306,11 +306,11 @@ def process_barcodes(barcode, forward, reverse):
             barcodes_raw, fwd_barcodes, rv_barcodes
         )
     except:
-        print_error("Something went wrong when filtering for barcodes.")
+        print_fail("Something went wrong when filtering for barcodes.")
         sys.exit(1)
     
     if barcodes_filtered.shape[0] == 0:
-        print_error("No barcodes left after filtering for barcodes.")
+        print_fail("No barcodes left after filtering for barcodes.")
         sys.exit(1)
         
     return barcodes_filtered
