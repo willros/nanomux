@@ -7,7 +7,7 @@ long_description = (this_directory / "README.md").read_text()
 
 setuptools.setup(
     name="nanomux",
-    version="0.1.0",
+    version="0.2.0",
     description="Demux reads from Nanopore sequencing",
     url="https://github.com/willros/nanomux",
     author="William Rosenbaum",
