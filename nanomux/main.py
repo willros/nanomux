@@ -6,11 +6,6 @@ import regex
 import argparse
 from functools import partial
 
-BC_LEN = 16
-FIND_BARCODE_WITHIN = (0, 300)
-READ_LEN_MIN = 600
-READ_LEN_MAX = 2500
-
 
 class bcolors:
     OKBLUE = "\033[94m"
@@ -51,7 +46,7 @@ def fastx_file_to_df(fastx_file: str) -> pd.DataFrame:
     return df
 
 
-def filter_16s_reads_by_len(df, start: int = READ_LEN_MIN, stop: int = READ_LEN_MAX):
+def filter_16s_reads_by_len(df, start, stop):
     return df.loc[lambda x: x.read_len.between(start, stop)]
 
 
@@ -65,13 +60,13 @@ def drop_and_print_duplicates(df):
     return dropped_duplicates
 
 
-def find_duplex_barcodes_greedy(df, fw, rv):
+def find_duplex_barcodes_greedy(df, fw, rv, bc_start, bc_end):
     fw_rc = revcomp(fw)
     rv_rc = revcomp(rv)
 
     fw_rv = (
         df.assign(fw=lambda x: x.sequence.str.find(fw))
-        .loc[lambda x: x.fw.between(*FIND_BARCODE_WITHIN)]
+        .loc[lambda x: x.fw.between(bc_start, bc_end)]
         .assign(rv=lambda x: x.sequence.str.find(rv_rc))
         .loc[lambda x: x.rv != -1]
         .assign(type="forward")
@@ -79,7 +74,7 @@ def find_duplex_barcodes_greedy(df, fw, rv):
 
     rv_fw = (
         df.assign(fw=lambda x: x.sequence.str.find(rv))
-        .loc[lambda x: x.fw.between(*FIND_BARCODE_WITHIN)]
+        .loc[lambda x: x.fw.between(bc_start, bc_end)]
         .assign(rv=lambda x: x.sequence.str.find(fw_rc))
         .loc[lambda x: x.rv != -1]
         .assign(type="reverse")
@@ -99,7 +94,7 @@ def fuzzy_match(sequence: str, mismatch_pattern: str, allowed_mismatch: int) -> 
         sys.exit(1)
 
 
-def find_duplex_barcodes_fuzzy(df, fw, rv, allowed_mismatches: int):
+def find_duplex_barcodes_fuzzy(df, fw, rv, allowed_mismatches, bc_start, bc_end):
 
     fw_rc = revcomp(fw)
     rv_rc = revcomp(rv)
@@ -111,17 +106,33 @@ def find_duplex_barcodes_fuzzy(df, fw, rv, allowed_mismatches: int):
     mismatch_rv_rc = f"({rv_rc}){{e<={allowed_mismatches}}}"
 
     fw_rv = (
-        df.assign(fw=lambda x: [fuzzy_match(y, mismatch_fw, allowed_mismatches) for y in x.sequence])
-        .loc[lambda x: x.fw.between(*FIND_BARCODE_WITHIN)]
-        .assign(rv=lambda x: [fuzzy_match(y, mismatch_rv_rc, allowed_mismatches) for y in x.sequence])
+        df.assign(
+            fw=lambda x: [
+                fuzzy_match(y, mismatch_fw, allowed_mismatches) for y in x.sequence
+            ]
+        )
+        .loc[lambda x: x.fw.between(bc_start, bc_end)]
+        .assign(
+            rv=lambda x: [
+                fuzzy_match(y, mismatch_rv_rc, allowed_mismatches) for y in x.sequence
+            ]
+        )
         .loc[lambda x: x.rv != -1]
         .assign(type="forward")
     )
 
     rv_fw = (
-        df.assign(fw=lambda x: [fuzzy_match(y, mismatch_rv, allowed_mismatches) for y in x.sequence])
-        .loc[lambda x: x.fw.between(*FIND_BARCODE_WITHIN)]
-        .assign(rv=lambda x: [fuzzy_match(y, mismatch_fw_rc, allowed_mismatches) for y in x.sequence])
+        df.assign(
+            fw=lambda x: [
+                fuzzy_match(y, mismatch_rv, allowed_mismatches) for y in x.sequence
+            ]
+        )
+        .loc[lambda x: x.fw.between(bc_start, bc_end)]
+        .assign(
+            rv=lambda x: [
+                fuzzy_match(y, mismatch_fw_rc, allowed_mismatches) for y in x.sequence
+            ]
+        )
         .loc[lambda x: x.rv != -1]
         .assign(type="reverse")
     )
@@ -129,7 +140,7 @@ def find_duplex_barcodes_fuzzy(df, fw, rv, allowed_mismatches: int):
     return pd.concat([fw_rv, rv_fw], ignore_index=True).pipe(drop_and_print_duplicates)
 
 
-def trim_barcodes(df):
+def trim_barcodes(df, BC_LEN):
     if df.shape[0] == 0:
         return df
 
@@ -150,7 +161,9 @@ def used_barcodes(barcode_df, used_fwd, used_rv):
     ]
 
 
-def demux_all_samples(read_df, barcode_df, duplex_barcodes: callable):
+def demux_all_samples(
+    read_df, barcode_df, duplex_barcodes: callable, trim_barcodes: callable
+):
     reads_demuxed_list = []
 
     for sample in barcode_df.itertuples():
@@ -247,11 +260,49 @@ def cli():
         default=2,
         help="If fuzzy, how many mismatches are allowed? [DEFAULT]: 2",
     )
+    parser.add_argument(
+        "-bclen",
+        "--barcode_length",
+        required=True,
+        type=int,
+        help="Length of barcode used",
+    )
+    parser.add_argument(
+        "-bc_start",
+        "--barcode_start",
+        required=False,
+        type=int,
+        default=0,
+        help="Where do the barcode start in the read?",
+    )
+    parser.add_argument(
+        "-bc_end",
+        "--barcode_end",
+        required=False,
+        type=int,
+        default=300,
+        help="Where do the barcode end in the read?",
+    )
+    parser.add_argument(
+        "-len_min",
+        "--read_len_min",
+        required=False,
+        type=int,
+        default=600,
+        help="Minimum length of read",
+    )
+    parser.add_argument(
+        "-len_max",
+        "--read_len_max",
+        required=False,
+        type=int,
+        default=2500,
+        help="Maximum length of read",
+    )
 
     args = parser.parse_args()
     command = "\nnanomux \n" + "".join(f"{k}: {v}\n" for k, v in vars(args).items())
     print_green(command)
-
 
     main(
         fastq=args.fastq,
@@ -261,6 +312,11 @@ def cli():
         reverse=args.reverse,
         mode=args.mode,
         mismatch=args.mismatch,
+        barcode_length=args.barcode_length,
+        barcode_start=args.barcode_start,
+        barcode_end=args.barcode_end,
+        read_len_min=args.read_len_min,
+        read_len_max=args.read_len_max,
     )
 
 
@@ -276,18 +332,21 @@ def folder_exists(folder):
         sys.exit(1)
 
 
-def process_fastx_file(fastx):
+def process_fastx_file(fastx, read_len_min, read_len_max):
     fastq_df = fastx_file_to_df(fastx)
     print_blue(f"Number of raw sequences in {fastx}: {fastq_df.shape[0]}")
 
-    fastq_df = fastq_df.pipe(filter_16s_reads_by_len)
+    filter_16s_reads_by_len_fun = partial(
+        filter_16s_reads_by_len, start=read_len_min, stop=read_len_max
+    )
+    fastq_df = fastq_df.pipe(filter_16s_reads_by_len_fun)
 
     if fastq_df.shape[0] == 0:
         print_fail("No reads left after filtering for lenght")
         sys.exit(1)
 
     print_blue(
-        f"Number of sequences between {READ_LEN_MIN}bp and {READ_LEN_MAX}bp: {fastq_df.shape[0]}"
+        f"Number of sequences between {read_len_min}bp and {read_len_max}bp: {fastq_df.shape[0]}"
     )
 
     return fastq_df
@@ -296,7 +355,7 @@ def process_fastx_file(fastx):
 def process_barcodes(barcode, forward, reverse):
     if forward == "" and reverse == "":
         return pd.read_csv(barcode)
-    
+
     try:
         barcodes_raw = pd.read_csv(barcode)
     except:
@@ -336,24 +395,39 @@ def main(
     reverse,
     mode,
     mismatch,
+    barcode_length,
+    barcode_start,
+    barcode_end,
+    read_len_min,
+    read_len_max,
 ):
     print_green(f"Running nanomux on {fastq}!")
+
     file_exists(fastq)
     folder_exists(output)
     make_dir(output)
 
     print_green("Processing fastq")
-    fastq_df = process_fastx_file(fastq)
+    fastq_df = process_fastx_file(fastq, read_len_min, read_len_max)
 
     print_green("Processing barcodes")
     barcodes_filtered = process_barcodes(barcode, forward, reverse)
 
     duplex_barcode_function = (
-        find_duplex_barcodes_greedy
+        partial(find_duplex_barcodes_greedy, bc_start=barcode_start, bc_end=barcode_end)
         if mode == "greedy"
-        else partial(find_duplex_barcodes_fuzzy, allowed_mismatches=mismatch)
+        else partial(
+            find_duplex_barcodes_fuzzy,
+            allowed_mismatches=mismatch,
+            bc_start=barcode_start,
+            bc_end=barcode_end,
+        )
     )
-    demuxed_df = demux_all_samples(fastq_df, barcodes_filtered, duplex_barcode_function)
+
+    trim_barcodes_fun = partial(trim_barcodes, BC_LEN=barcode_length)
+    demuxed_df = demux_all_samples(
+        fastq_df, barcodes_filtered, duplex_barcode_function, trim_barcodes_fun
+    )
 
     print_blue(f"Number of sequences with barcodes: {demuxed_df.shape[0]}")
 
