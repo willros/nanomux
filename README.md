@@ -8,5 +8,5 @@ $ pip install nanomux
 
 ## Quick Start:
 ```console
-$ nanomux
+$ nanomux -h
 ```
