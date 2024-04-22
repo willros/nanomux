@@ -70,7 +70,7 @@ def drop_and_print_duplicates(df):
     return dropped_duplicates
 
 
-def find_barcodes_greedy(df, fw, rv, bc_start, bc_end, bc_name):
+def find_barcodes_greedy(df, fw, rv, bc_start, bc_end, bc_name, read_len_min, bc_len):
     fw_rc = revcomp(fw)
     rv_rc = revcomp(rv)
 
@@ -92,7 +92,7 @@ def find_barcodes_greedy(df, fw, rv, bc_start, bc_end, bc_name):
     if both.shape[0] == 0:
         return None
 
-    new_seq = both.map_rows(lambda x: x[1][x[3] : x[4]])
+    new_seq = both.map_rows(lambda x: x[1][x[3] + bc_len : x[4]])
     filtered = (
         both.with_columns(sequence=new_seq["map"])
         .with_columns(read_len=pl.col("sequence").str.len_bytes())
@@ -100,6 +100,7 @@ def find_barcodes_greedy(df, fw, rv, bc_start, bc_end, bc_name):
         .sort(by="read_len", descending=True)
         .with_columns(bc_name=pl.lit(bc_name))
         .with_columns(n_reads=pl.col("bc_name").len().over("bc_name"))
+        .filter(pl.col("read_len") > read_len_min)
     )
 
     return filtered
@@ -117,11 +118,12 @@ def search_barcodes(
     barcodes,
     min_reads,
     out_folder,
+    read_len_min,
 ) -> pl.DataFrame:
     samples = []
     for x in barcodes.iter_rows(named=True):
         sample = find_barcodes_greedy(
-            df, x["fwd_barcode"], x["rvs_barcode"], 0, 300, x["name"]
+            df, x["fwd_barcode"], x["rvs_barcode"], 0, 300, x["name"], read_len_min, x["bc_len"]
         )
         # save the bc directly
         if sample is None:
@@ -133,7 +135,7 @@ def search_barcodes(
             )
             continue
 
-        print_green(f"Barcode: {x['name']}, contained: {sample.shape[0]} reads)")
+        print_green(f"Barcode: {x['name']}, contained: {sample.shape[0]} reads")
         out_path = f"{out_folder}/{x['name']}_nanomuxed.fa"
         write_fastx_from_df(sample, out_path)
 
@@ -207,7 +209,7 @@ def cli():
         "-par",
         "--parquet",
         required=False,
-        default=False,
+        default=True,
         help="Save all demuxed files as parquet file?",
         action=argparse.BooleanOptionalAction,
     )
@@ -243,7 +245,7 @@ def folder_exists(folder):
 
 def read_valid_csv(csv):
     try:
-        df = pl.read_csv(csv)
+        df = pl.read_csv(csv).with_columns(bc_len=pl.col("fwd_barcode").str.len_bytes())
         return df
     except:
         print_fail(f"{csv} cannot be read!")
@@ -283,11 +285,11 @@ def main(
 
     # demuxing barcodes
     print_green("Searching for barcodes...")
-    demuxed_df = search_barcodes(fastx_df, barcodes, min_reads, output)
+    demuxed_df = search_barcodes(fastx_df, barcodes, min_reads, output, read_len_min)
 
     print_blue(f"Number of sequences with barcodes: {demuxed_df.shape[0]}")
-    print_blue(f"Number of barcode found: {demuxed_df['bc_name'].n_unique()}")
-    print_warning(
+    print_blue(f"Number of barcodes found: {demuxed_df['bc_name'].n_unique()}")
+    print_blue(
         f"Number of reads found in more than one sample: {demuxed_df.filter(demuxed_df.is_duplicated()).shape[0]}"
     )
 
