@@ -10,3 +10,7 @@ $ pip install nanomux
 ```console
 $ nanomux -h
 ```
+
+## TODO
+* add https://github.com/abstractqqq/polars_ds_extension/blob/main/examples/basics.ipynb
+Look into Jaro-Winkler - apples
