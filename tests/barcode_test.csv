@@ -1,0 +1,4 @@
+name,fwd_barcode,rvs_barcode
+bc_1,GCAT,CCTG
+bc_2,GCAT,GGCA
+bc_wrong,TTTTAAACAGTGTACG,TTTTAAACAGTGTACG
