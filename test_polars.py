@@ -47,10 +47,10 @@ def folder_exists(folder):
 
 def fastx_file_to_df(fastx_file: str) -> pl.DataFrame:
     fastx = pyfastx.Fastx(fastx_file)
-    reads = list(zip(*[[x[0], x[1]] for x in fastx]))
+    reads = list(zip(*[[x[0], x[1], x[2]] for x in fastx]))
 
     df = (
-        pl.DataFrame({"name": reads[0], "sequence": reads[1]})
+        pl.DataFrame({"name": reads[0], "sequence": reads[1], "qual": reads[2]})
         .with_columns(read_len=pl.col("sequence").str.len_bytes())
         .sort(by="read_len", descending=True)
     )
@@ -98,9 +98,11 @@ def find_barcodes_greedy(df, fw, rv, bc_start, bc_end, bc_name, read_len_min, bc
     if both.shape[0] == 0:
         return None
 
-    new_seq = both.map_rows(lambda x: x[1][x[3] + bc_len : x[4]])
+    new_seq = both.map_rows(lambda x: x[1][x[4] + bc_len : x[5]])
+    new_qual = both.map_rows(lambda x: x[2][x[4] + bc_len : x[5]])
     barcodes = (
         both.with_columns(sequence=new_seq["map"])
+        .with_columns(qual=new_qual["map"])
         .with_columns(read_len=pl.col("sequence").str.len_bytes())
         .drop(["fw", "rv"])
         .sort(by="read_len", descending=True)
@@ -177,12 +179,14 @@ def find_barcodes_fuzzy(
         .with_columns(end=pl.col("sequence").str.find(pl.col("kmer_end")))
     )
 
-    new_seq = barcodes.map_rows(lambda x: x[1][x[5] + bc_len : x[6]])
+    new_seq = barcodes.map_rows(lambda x: x[1][x[6] + bc_len : x[7]])
+    new_qual = barcodes.map_rows(lambda x: x[2][x[6] + bc_len : x[7]])
 
     barcodes = (
         barcodes.with_columns(sequence=new_seq["map"])
+        .with_columns(qual=new_qual["map"])
         .with_columns(read_len=pl.col("sequence").str.len_bytes())[
-            ["name", "sequence", "read_len"]
+            ["name", "sequence", "read_len", "qual"]
         ]
         .sort(by="read_len", descending=True)
         .with_columns(bc_name=pl.lit(bc_name))
@@ -196,8 +200,10 @@ def find_barcodes_fuzzy(
 def write_fastx_from_df(df, out_file):
     with open(out_file, "a+") as f:
         for x in df.iter_rows(named=True):
-            print(f">{x['name']}", file=f)
+            print(f"@{x['name']}", file=f)
             print(f"{x['sequence']}", file=f)
+            print("+", file=f)
+            print(f"{x['qual']}", file=f)
 
 
 def write_fa_from_parquet(parquet, out_folder):
@@ -206,7 +212,7 @@ def write_fa_from_parquet(parquet, out_folder):
     df = pl.read_parquet(parquet)
 
     for bc in df.partition_by("bc_name"):
-        out_file = f"{out_folder}/{bc['bc_name'][0]}.fa"
+        out_file = f"{out_folder}/{bc['bc_name'][0]}.fq"
         write_fastx_from_df(bc, out_file)
 
 
@@ -242,7 +248,7 @@ def search_barcodes_greedy(
             continue
 
         print_green(f"Barcode: {x['name']}, contained: {sample.shape[0]} reads")
-        out_path = f"{out_folder}/{x['name']}_nanomuxed.fa"
+        out_path = f"{out_folder}/{x['name']}_nanomuxed.fq"
         write_fastx_from_df(sample, out_path)
 
         samples.append(sample)
@@ -299,7 +305,7 @@ def search_barcodes_fuzzy(
             continue
 
         print_green(f"Barcode: {x['name']}, contained: {sample.shape[0]} reads")
-        out_path = f"{out_folder}/{x['name']}_nanomuxed.fa"
+        out_path = f"{out_folder}/{x['name']}_nanomuxed.fq"
         write_fastx_from_df(sample, out_path)
 
         samples.append(sample)
