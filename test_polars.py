@@ -6,6 +6,7 @@ import sys
 import argparse
 from datetime import datetime
 
+
 class bcolors:
     OKBLUE = "\033[94m"
     OKCYAN = "\033[96m"
@@ -64,13 +65,12 @@ def filter_16s_reads_by_len(df, start, stop):
 def revcomp(dna_seq):
     return dna_seq[::-1].translate(str.maketrans("ATGC", "TACG"))
 
+
 def make_kmer(string, k):
     if k > len(string):
         return None
-    
-    return [
-        string[i: k + i] for i in range(len(string) -k + 1)
-    ]
+
+    return [string[i : k + i] for i in range(len(string) - k + 1)]
 
 
 def drop_and_print_duplicates(df):
@@ -111,85 +111,85 @@ def find_barcodes_greedy(df, fw, rv, bc_start, bc_end, bc_name, read_len_min, bc
 
     return barcodes
 
-def find_barcodes_fuzzy(df, start, fw, rv, bc_start, bc_end, bc_name, read_len_min, bc_len, allowed_mismatch):
 
+def find_barcodes_fuzzy(
+    df, start, fw, rv, bc_start, bc_end, bc_name, read_len_min, bc_len, allowed_mismatch
+):
 
-    # ---FW=========revcomp(RV)--- 
+    # ---FW=========revcomp(RV)---
     needles_fw = (
-        start
-        .with_columns(leven=pds.str_leven(pl.col("kmer_start"), fw))
-        .filter(pl.col("leven") <= allowed_mismatch)
-        [["name", "kmer_start"]]
+        start.with_columns(leven=pds.str_leven(pl.col("kmer_start"), fw))
+        .filter(pl.col("leven") <= allowed_mismatch)[["name", "kmer_start"]]
         .unique()
     )
-    
+
     if needles_fw.shape[0] == 0:
         return None
 
     fw_bc = (
-        df
-        .join(needles_fw, on="name")
+        df.join(needles_fw, on="name")
         .with_columns(sequence=pl.col("sequence").str.slice(-bc_end))
-        .with_columns(kmer_end=pl.col("sequence").map_elements(lambda x: make_kmer(x, bc_len), return_dtype=list[str]))
+        .with_columns(
+            kmer_end=pl.col("sequence").map_elements(
+                lambda x: make_kmer(x, bc_len), return_dtype=list[str]
+            )
+        )
         .drop("sequence")
         .explode("kmer_end")
         .with_columns(leven=pds.str_leven(pl.col("kmer_end"), revcomp(rv)))
-        .filter(pl.col("leven") <= allowed_mismatch)
-        [["name", "kmer_start", "kmer_end"]]
+        .filter(pl.col("leven") <= allowed_mismatch)[["name", "kmer_start", "kmer_end"]]
         .unique()
     )
 
-
-    # ---RV=========revcomp(FW)--- 
+    # ---RV=========revcomp(FW)---
     needles_rv = (
-        start
-        .filter(~pl.col("name").is_in(fw_bc["name"].unique()))
+        start.filter(~pl.col("name").is_in(fw_bc["name"].unique()))
         .with_columns(leven=pds.str_leven(pl.col("kmer_start"), rv))
-        .filter(pl.col("leven") <= allowed_mismatch)
-        [["name", "kmer_start"]]
+        .filter(pl.col("leven") <= allowed_mismatch)[["name", "kmer_start"]]
         .unique()
     )
-    
+
     if needles_rv.shape[0] == 0:
         return None
-    
+
     rv_bc = (
-        df
-        .join(needles_rv, on="name")
+        df.join(needles_rv, on="name")
         .with_columns(sequence=pl.col("sequence").str.slice(-bc_end))
-        .with_columns(kmer_end=pl.col("sequence").map_elements(lambda x: make_kmer(x, bc_len), return_dtype=list[str]))
+        .with_columns(
+            kmer_end=pl.col("sequence").map_elements(
+                lambda x: make_kmer(x, bc_len), return_dtype=list[str]
+            )
+        )
         .drop("sequence")
         .explode("kmer_end")
         .with_columns(leven=pds.str_leven(pl.col("kmer_end"), revcomp(fw)))
-        .filter(pl.col("leven") <= allowed_mismatch)
-        [["name", "kmer_start", "kmer_end"]]
+        .filter(pl.col("leven") <= allowed_mismatch)[["name", "kmer_start", "kmer_end"]]
         .unique()
     )
-    
+
     both = pl.concat([fw_bc, rv_bc]).unique()
     if both.shape[0] == 0:
         return None
-    
+
     barcodes = (
-        df
-        .join(both, on="name")
+        df.join(both, on="name")
         .with_columns(start=pl.col("sequence").str.find(pl.col("kmer_start")))
         .with_columns(end=pl.col("sequence").str.find(pl.col("kmer_end")))
     )
-    
+
     new_seq = barcodes.map_rows(lambda x: x[1][x[5] + bc_len : x[6]])
-    
+
     barcodes = (
         barcodes.with_columns(sequence=new_seq["map"])
-        .with_columns(read_len=pl.col("sequence").str.len_bytes())
-        [["name", "sequence", "read_len"]]
+        .with_columns(read_len=pl.col("sequence").str.len_bytes())[
+            ["name", "sequence", "read_len"]
+        ]
         .sort(by="read_len", descending=True)
         .with_columns(bc_name=pl.lit(bc_name))
         .filter(pl.col("read_len") > read_len_min)
         .with_columns(n_reads=pl.col("bc_name").len().over("bc_name"))
     )
-    
-    
+
     return barcodes
 
 
@@ -198,13 +198,13 @@ def write_fastx_from_df(df, out_file):
         for x in df.iter_rows(named=True):
             print(f">{x['name']}", file=f)
             print(f"{x['sequence']}", file=f)
-            
-            
+
+
 def write_fa_from_parquet(parquet, out_folder):
     make_dir(out_folder)
-    
+
     df = pl.read_parquet(parquet)
-    
+
     for bc in df.partition_by("bc_name"):
         out_file = f"{out_folder}/{bc['bc_name'][0]}.fa"
         write_fastx_from_df(bc, out_file)
@@ -222,7 +222,14 @@ def search_barcodes_greedy(
     samples = []
     for x in barcodes.iter_rows(named=True):
         sample = find_barcodes_greedy(
-            df, x["fwd_barcode"], x["rvs_barcode"], bc_start, bc_end, x["name"], read_len_min, x["bc_len"]
+            df,
+            x["fwd_barcode"],
+            x["rvs_barcode"],
+            bc_start,
+            bc_end,
+            x["name"],
+            read_len_min,
+            x["bc_len"],
         )
         # save the bc directly
         if sample is None:
@@ -242,6 +249,7 @@ def search_barcodes_greedy(
 
     return pl.concat(samples)
 
+
 def search_barcodes_fuzzy(
     df,
     barcodes,
@@ -253,20 +261,32 @@ def search_barcodes_fuzzy(
     allowed_mismatch,
 ) -> pl.DataFrame:
     samples = []
-    
+
     bc_len = barcodes["bc_len"][0]
-    
+
     start = (
-        df
-        .with_columns(sequence=pl.col("sequence").str.slice(bc_start, bc_end))
-        .with_columns(kmer_start=pl.col("sequence").map_elements(lambda x: make_kmer(x, bc_len), return_dtype=list[str]))
+        df.with_columns(sequence=pl.col("sequence").str.slice(bc_start, bc_end))
+        .with_columns(
+            kmer_start=pl.col("sequence").map_elements(
+                lambda x: make_kmer(x, bc_len), return_dtype=list[str]
+            )
+        )
         .drop("sequence")
         .explode("kmer_start")
     )
-    
+
     for x in barcodes.iter_rows(named=True):
         sample = find_barcodes_fuzzy(
-            df, start, x["fwd_barcode"], x["rvs_barcode"], bc_start, bc_end, x["name"], read_len_min, bc_len, allowed_mismatch
+            df,
+            start,
+            x["fwd_barcode"],
+            x["rvs_barcode"],
+            bc_start,
+            bc_end,
+            x["name"],
+            read_len_min,
+            bc_len,
+            allowed_mismatch,
         )
         # save the bc directly
         if sample is None:
@@ -388,7 +408,7 @@ def cli():
         min_reads=args.minimum_reads,
         parquet=args.parquet,
         mode=args.mode,
-        mismatch=args.mismatch
+        mismatch=args.mismatch,
     )
 
 
@@ -450,9 +470,26 @@ def main(
     # demuxing barcodes
     print_green(f"Searching for barcodes with mode: {mode}")
     if mode == "greedy":
-        demuxed_df = search_barcodes_greedy(fastx_df, barcodes, min_reads, output, read_len_min, barcode_start, barcode_end)
+        demuxed_df = search_barcodes_greedy(
+            fastx_df,
+            barcodes,
+            min_reads,
+            output,
+            read_len_min,
+            barcode_start,
+            barcode_end,
+        )
     elif mode == "fuzzy":
-        demuxed_df = search_barcodes_fuzzy(fastx_df, barcodes, min_reads, output, read_len_min, barcode_start, barcode_end, mismatch)
+        demuxed_df = search_barcodes_fuzzy(
+            fastx_df,
+            barcodes,
+            min_reads,
+            output,
+            read_len_min,
+            barcode_start,
+            barcode_end,
+            mismatch,
+        )
     else:
         print_fail("Mode must be `fuzzy` or `greedy`")
         sys.exit(1)
@@ -470,9 +507,9 @@ def main(
 
     print_green(f"Fasta files saved to: {output}")
     print_green("Nanomux is done!")
-    
+
     with open(f"{output}/nanomux.log", "a+") as f:
-        
+
         now = datetime.now()
         date_string = f"{now.year}-{now.month:02d}-{now.day:02d}"
         print(f"Date: {date_string}", file=f, end="\n")
@@ -482,12 +519,21 @@ def main(
         print("Demux information:", file=f, end="\n")
         print(f"Number of raw sequences: {fastx_df_raw.shape[0]}", file=f, end="\n")
         print(f"Number of filtered sequences: {fastx_df.shape[0]}", file=f, end="\n")
-        print(f"Number of sequences with barcodes: {demuxed_df.shape[0]}", file=f, end="\n")
         print(
-            f"Number of reads found in more than one sample: {demuxed_df.filter(demuxed_df['name'].is_duplicated()).shape[0]}", file=f, end="\n"
+            f"Number of sequences with barcodes: {demuxed_df.shape[0]}",
+            file=f,
+            end="\n",
         )
-        print(f"Number of barcodes found: {demuxed_df['bc_name'].n_unique()}", file=f, end="\n")
-        
+        print(
+            f"Number of reads found in more than one sample: {demuxed_df.filter(demuxed_df['name'].is_duplicated()).shape[0]}",
+            file=f,
+            end="\n",
+        )
+        print(
+            f"Number of barcodes found: {demuxed_df['bc_name'].n_unique()}",
+            file=f,
+            end="\n",
+        )
 
 
 if __name__ == "__main__":
