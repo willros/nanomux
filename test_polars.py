@@ -347,7 +347,7 @@ def cli():
         required=False,
         type=int,
         default=1,
-        help="If fuzzy, how many mismatches are allowed? [DEFAULT]: 2",
+        help="If fuzzy, how many mismatches are allowed? [DEFAULT]: 1",
     )
     parser.add_argument(
         "-bc_start",
