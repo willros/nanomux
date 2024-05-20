@@ -3,7 +3,9 @@ Demultiplex your nanopore reads
 
 ## Install:
 ```console
-$ pip install nanomux
+$ git clone https://github.com/willros/nanomux.git
+$ cd nanomux
+$ pip install -e .
 ```
 
 ## Quick Start:
