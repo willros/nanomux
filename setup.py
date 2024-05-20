@@ -18,9 +18,10 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     python_requires=">=3.9",
     install_requires=[
-        "pandas==2.2.1",
-        "regex==2023.12.25",
         "pyfastx==2.0.2",
+        "polars",
+        "polars-ds",
+        "pyarrow"
     ],
     entry_points={"console_scripts": ["nanomux=nanomux.main:cli"]},
 )

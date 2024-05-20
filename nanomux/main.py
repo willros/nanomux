@@ -1,10 +1,10 @@
-import pandas as pd
+import polars as pl
+import polars_ds as pds
 import pyfastx
 from pathlib import Path
 import sys
-import regex
 import argparse
-from functools import partial
+from datetime import datetime
 
 
 class bcolors:
@@ -33,181 +33,284 @@ def print_blue(text):
     print(f"{bcolors.OKBLUE}[SUMMARIZE]: {text}{bcolors.ENDC}")
 
 
-def fastx_file_to_df(fastx_file: str) -> pd.DataFrame:
+def file_exists(file):
+    if not Path(file).exists():
+        print_fail(f"{file} does not exist!")
+        sys.exit(1)
+
+
+def folder_exists(folder):
+    if Path(folder).exists():
+        print_fail(f"{folder} already exist!")
+        sys.exit(1)
+
+
+def fastx_file_to_df(fastx_file: str) -> pl.DataFrame:
     fastx = pyfastx.Fastx(fastx_file)
     reads = list(zip(*[[x[0], x[1], x[2]] for x in fastx]))
 
     df = (
-        pd.DataFrame({"name": reads[0], "sequence": reads[1], "quality": reads[2]})
-        .assign(read_len=lambda x: x.sequence.str.len())
-        .sort_values("read_len", ascending=False)
+        pl.DataFrame({"name": reads[0], "sequence": reads[1], "qual": reads[2]})
+        .with_columns(read_len=pl.col("sequence").str.len_bytes())
+        .sort(by="read_len", descending=True)
     )
 
     return df
 
 
 def filter_16s_reads_by_len(df, start, stop):
-    return df.loc[lambda x: x.read_len.between(start, stop)]
+    return df.filter(pl.col("read_len").is_between(start, stop))
 
 
 def revcomp(dna_seq):
     return dna_seq[::-1].translate(str.maketrans("ATGC", "TACG"))
 
 
+def make_kmer(string, k):
+    if k > len(string):
+        return None
+
+    return [string[i : k + i] for i in range(len(string) - k + 1)]
+
+
 def drop_and_print_duplicates(df):
-    dropped_duplicates = df.drop_duplicates("name")
+    dropped_duplicates = df.unique(subset="name")
     n_duplicates = df.shape[0] - dropped_duplicates.shape[0]
     return dropped_duplicates
 
 
-def find_duplex_barcodes_greedy(df, fw, rv, bc_start, bc_end):
-    fw_rc = revcomp(fw)
-    rv_rc = revcomp(rv)
-
+def find_barcodes_greedy(df, fw, rv, bc_start, bc_end, bc_name, read_len_min, bc_len):
     fw_rv = (
-        df.assign(fw=lambda x: x.sequence.str.find(fw))
-        .loc[lambda x: x.fw.between(bc_start, bc_end)]
-        .assign(rv=lambda x: x.sequence.str.find(rv_rc))
-        .loc[lambda x: x.rv != -1]
-        .assign(type="forward")
+        df.with_columns(fw=pl.col("sequence").str.find(fw))
+        .filter(pl.col("fw").is_between(bc_start, bc_end))
+        .with_columns(rv=pl.col("sequence").str.find(revcomp(rv)))
+        .filter(pl.col("rv").is_not_null())
     )
 
     rv_fw = (
-        df.assign(fw=lambda x: x.sequence.str.find(rv))
-        .loc[lambda x: x.fw.between(bc_start, bc_end)]
-        .assign(rv=lambda x: x.sequence.str.find(fw_rc))
-        .loc[lambda x: x.rv != -1]
-        .assign(type="reverse")
+        df.with_columns(fw=pl.col("sequence").str.find(rv))
+        .filter(pl.col("fw").is_between(bc_start, bc_end))
+        .with_columns(rv=pl.col("sequence").str.find(revcomp(fw)))
+        .filter(pl.col("rv").is_not_null())
     )
 
-    return pd.concat([fw_rv, rv_fw], ignore_index=True).pipe(drop_and_print_duplicates)
+    both = pl.concat([fw_rv, rv_fw]).pipe(drop_and_print_duplicates)
+    if both.shape[0] == 0:
+        return None
 
-
-def fuzzy_match(sequence: str, mismatch_pattern: str, allowed_mismatch: int) -> int:
-    match = regex.search(mismatch_pattern, sequence)
-    if not match:
-        return -1
-    try:
-        return int(match.start())
-    except:
-        print_fail("{match.start()} is not an integer")
-        sys.exit(1)
-
-
-def find_duplex_barcodes_fuzzy(df, fw, rv, allowed_mismatches, bc_start, bc_end):
-
-    fw_rc = revcomp(fw)
-    rv_rc = revcomp(rv)
-
-    mismatch_fw = f"({fw}){{e<={allowed_mismatches}}}"
-    mismatch_rv = f"({rv}){{e<={allowed_mismatches}}}"
-
-    mismatch_fw_rc = f"({fw_rc}){{e<={allowed_mismatches}}}"
-    mismatch_rv_rc = f"({rv_rc}){{e<={allowed_mismatches}}}"
-
-    fw_rv = (
-        df.assign(
-            fw=lambda x: [
-                fuzzy_match(y, mismatch_fw, allowed_mismatches) for y in x.sequence
-            ]
-        )
-        .loc[lambda x: x.fw.between(bc_start, bc_end)]
-        .assign(
-            rv=lambda x: [
-                fuzzy_match(y, mismatch_rv_rc, allowed_mismatches) for y in x.sequence
-            ]
-        )
-        .loc[lambda x: x.rv != -1]
-        .assign(type="forward")
+    new_seq = both.map_rows(lambda x: x[1][x[4] + bc_len : x[5]])
+    new_qual = both.map_rows(lambda x: x[2][x[4] + bc_len : x[5]])
+    barcodes = (
+        both.with_columns(sequence=new_seq["map"])
+        .with_columns(qual=new_qual["map"])
+        .with_columns(read_len=pl.col("sequence").str.len_bytes())
+        .drop(["fw", "rv"])
+        .sort(by="read_len", descending=True)
+        .with_columns(bc_name=pl.lit(bc_name))
+        .filter(pl.col("read_len") > read_len_min)
+        .with_columns(n_reads=pl.col("bc_name").len().over("bc_name"))
     )
 
-    rv_fw = (
-        df.assign(
-            fw=lambda x: [
-                fuzzy_match(y, mismatch_rv, allowed_mismatches) for y in x.sequence
-            ]
-        )
-        .loc[lambda x: x.fw.between(bc_start, bc_end)]
-        .assign(
-            rv=lambda x: [
-                fuzzy_match(y, mismatch_fw_rc, allowed_mismatches) for y in x.sequence
-            ]
-        )
-        .loc[lambda x: x.rv != -1]
-        .assign(type="reverse")
-    )
-
-    return pd.concat([fw_rv, rv_fw], ignore_index=True).pipe(drop_and_print_duplicates)
+    return barcodes
 
 
-def trim_barcodes(df, BC_LEN):
-    if df.shape[0] == 0:
-        return df
-
-    return (
-        df.assign(
-            sequence=lambda x: [
-                y.sequence[int(y.fw) + BC_LEN : int(y.rv) + 1] for y in x.itertuples()
-            ]
-        ).assign(trimmed_len=lambda x: x.sequence.str.len())
-        # .loc[lambda x: x.trimmed_len.between(1400, 1700)]
-        .drop(columns=["fw", "rv"])
-    )
-
-
-def used_barcodes(barcode_df, used_fwd, used_rv):
-    return barcode_df.loc[lambda x: x.fwd.isin(used_fwd)].loc[
-        lambda x: x.rvs.isin(used_rv)
-    ]
-
-
-def demux_all_samples(
-    read_df, barcode_df, duplex_barcodes: callable, trim_barcodes: callable
+def find_barcodes_fuzzy(
+    df, start, fw, rv, bc_start, bc_end, bc_name, read_len_min, bc_len, allowed_mismatch
 ):
-    reads_demuxed_list = []
 
-    for sample in barcode_df.itertuples():
-        sample_df = duplex_barcodes(
-            read_df, sample.fwd_barcode, sample.rvs_barcode
-        ).pipe(trim_barcodes)
+    # ---FW=========revcomp(RV)---
+    needles_fw = (
+        start.with_columns(leven=pds.str_leven(pl.col("kmer_start"), fw))
+        .filter(pl.col("leven") <= allowed_mismatch)[["name", "kmer_start"]]
+        .unique()
+    )
 
-        if sample_df.shape[0] == 0:
-            print_warning(f"NO BARCODES FOUND FOR: {sample.name}")
-            continue
+    if needles_fw.shape[0] == 0:
+        return None
 
-        print_blue(f"Barcodes found for {sample.name}: {sample_df.shape[0]}")
+    fw_bc = (
+        df.join(needles_fw, on="name")
+        .with_columns(sequence=pl.col("sequence").str.slice(-bc_end))
+        .with_columns(
+            kmer_end=pl.col("sequence").map_elements(
+                lambda x: make_kmer(x, bc_len), return_dtype=list[str]
+            )
+        )
+        .drop("sequence")
+        .explode("kmer_end")
+        .with_columns(leven=pds.str_leven(pl.col("kmer_end"), revcomp(rv)))
+        .filter(pl.col("leven") <= allowed_mismatch)[["name", "kmer_start", "kmer_end"]]
+        .unique()
+    )
 
-        sample_df = sample_df.assign(sample=sample.name)
+    # ---RV=========revcomp(FW)---
+    needles_rv = (
+        start.filter(~pl.col("name").is_in(fw_bc["name"].unique()))
+        .with_columns(leven=pds.str_leven(pl.col("kmer_start"), rv))
+        .filter(pl.col("leven") <= allowed_mismatch)[["name", "kmer_start"]]
+        .unique()
+    )
 
-        reads_demuxed_list.append(sample_df)
+    if needles_rv.shape[0] == 0:
+        return None
 
-    try:
-        df = pd.concat(reads_demuxed_list, ignore_index=True)
-        return df
-    except:
-        print_fail("No samples were found!")
-        sys.exit(1)
+    rv_bc = (
+        df.join(needles_rv, on="name")
+        .with_columns(sequence=pl.col("sequence").str.slice(-bc_end))
+        .with_columns(
+            kmer_end=pl.col("sequence").map_elements(
+                lambda x: make_kmer(x, bc_len), return_dtype=list[str]
+            )
+        )
+        .drop("sequence")
+        .explode("kmer_end")
+        .with_columns(leven=pds.str_leven(pl.col("kmer_end"), revcomp(fw)))
+        .filter(pl.col("leven") <= allowed_mismatch)[["name", "kmer_start", "kmer_end"]]
+        .unique()
+    )
+
+    both = pl.concat([fw_bc, rv_bc]).unique()
+    if both.shape[0] == 0:
+        return None
+
+    barcodes = (
+        df.join(both, on="name")
+        .with_columns(start=pl.col("sequence").str.find(pl.col("kmer_start")))
+        .with_columns(end=pl.col("sequence").str.find(pl.col("kmer_end")))
+    )
+
+    new_seq = barcodes.map_rows(lambda x: x[1][x[6] + bc_len : x[7]])
+    new_qual = barcodes.map_rows(lambda x: x[2][x[6] + bc_len : x[7]])
+
+    barcodes = (
+        barcodes.with_columns(sequence=new_seq["map"])
+        .with_columns(qual=new_qual["map"])
+        .with_columns(read_len=pl.col("sequence").str.len_bytes())[
+            ["name", "sequence", "read_len", "qual"]
+        ]
+        .sort(by="read_len", descending=True)
+        .with_columns(bc_name=pl.lit(bc_name))
+        .filter(pl.col("read_len") > read_len_min)
+        .with_columns(n_reads=pl.col("bc_name").len().over("bc_name"))
+    )
+
+    return barcodes
 
 
 def write_fastx_from_df(df, out_file):
-
     with open(out_file, "a+") as f:
-        for x in df.itertuples():
-            print(f">{x.name}", file=f)
-            print(f"{x.sequence}", file=f)
-            # print("+", file=f)
-            # print(f"{x.quality}", file=f)
+        for x in df.iter_rows(named=True):
+            print(f"@{x['name']}", file=f)
+            print(f"{x['sequence']}", file=f)
+            print("+", file=f)
+            print(f"{x['qual']}", file=f)
 
 
-def write_fastx_from_all_sample_in_df(df, out_folder):
-    out_folder = Path(out_folder)
+def write_fa_from_parquet(parquet, out_folder):
+    make_dir(out_folder)
 
-    for sample in df["sample"].unique():
-        subset = df.loc[lambda x: x["sample"] == sample]
-        name = subset.iloc[0]["sample"]
-        name = f"{name}_{subset.shape[0]}_reads.fasta"
-        out_file = out_folder / name
-        write_fastx_from_df(subset, out_file)
+    df = pl.read_parquet(parquet)
+
+    for bc in df.partition_by("bc_name"):
+        out_file = f"{out_folder}/{bc['bc_name'][0]}.fq"
+        write_fastx_from_df(bc, out_file)
+
+
+def search_barcodes_greedy(
+    df,
+    barcodes,
+    min_reads,
+    out_folder,
+    read_len_min,
+    bc_start,
+    bc_end,
+) -> pl.DataFrame:
+    samples = []
+    for x in barcodes.iter_rows(named=True):
+        sample = find_barcodes_greedy(
+            df,
+            x["fwd_barcode"],
+            x["rvs_barcode"],
+            bc_start,
+            bc_end,
+            x["name"],
+            read_len_min,
+            x["bc_len"],
+        )
+        # save the bc directly
+        if sample is None:
+            print_warning(f"No barcodes for {x['name']}")
+            continue
+        if sample.shape[0] < min_reads:
+            print_warning(
+                f"Barcode: {x['name']}, only contained: {sample.shape[0]} reads. Filtering away."
+            )
+            continue
+
+        print_green(f"Barcode: {x['name']}, contained: {sample.shape[0]} reads")
+        out_path = f"{out_folder}/{x['name']}_nanomuxed.fq"
+        write_fastx_from_df(sample, out_path)
+
+        samples.append(sample)
+
+    return pl.concat(samples)
+
+
+def search_barcodes_fuzzy(
+    df,
+    barcodes,
+    min_reads,
+    out_folder,
+    read_len_min,
+    bc_start,
+    bc_end,
+    allowed_mismatch,
+) -> pl.DataFrame:
+    samples = []
+
+    bc_len = barcodes["bc_len"][0]
+
+    start = (
+        df.with_columns(sequence=pl.col("sequence").str.slice(bc_start, bc_end))
+        .with_columns(
+            kmer_start=pl.col("sequence").map_elements(
+                lambda x: make_kmer(x, bc_len), return_dtype=list[str]
+            )
+        )
+        .drop("sequence")
+        .explode("kmer_start")
+    )
+
+    for x in barcodes.iter_rows(named=True):
+        sample = find_barcodes_fuzzy(
+            df,
+            start,
+            x["fwd_barcode"],
+            x["rvs_barcode"],
+            bc_start,
+            bc_end,
+            x["name"],
+            read_len_min,
+            bc_len,
+            allowed_mismatch,
+        )
+        # save the bc directly
+        if sample is None:
+            print_warning(f"No barcodes for {x['name']}")
+            continue
+        if sample.shape[0] < min_reads:
+            print_warning(
+                f"Barcode: {x['name']}, only contained: {sample.shape[0]} reads. Filtering away."
+            )
+            continue
+
+        print_green(f"Barcode: {x['name']}, contained: {sample.shape[0]} reads")
+        out_path = f"{out_folder}/{x['name']}_nanomuxed.fq"
+        write_fastx_from_df(sample, out_path)
+
+        samples.append(sample)
+
+    return pl.concat(samples)
 
 
 def make_dir(outpath: str) -> None:
@@ -218,7 +321,7 @@ def make_dir(outpath: str) -> None:
 
 def cli():
     parser = argparse.ArgumentParser(description="Demultiplex your Nanopore reads!")
-    parser.add_argument("-f", "--fastq", required=True, help="Fastq file")
+    parser.add_argument("-f", "--fastx", required=True, help="Fastx file")
     parser.add_argument(
         "-o",
         "--output",
@@ -227,23 +330,9 @@ def cli():
     )
     parser.add_argument(
         "-b",
-        "--barcode",
+        "--barcodes",
         required=True,
         help=".csv files with barcodes",
-    )
-    parser.add_argument(
-        "-fw",
-        "--forward",
-        required=False,
-        default="",
-        help="List of forward barcodes. [EXAMPLE]: `-fw F1,F2,F3`",
-    )
-    parser.add_argument(
-        "-rv",
-        "--reverse",
-        required=False,
-        default="",
-        help="List of reverse barcodes. [EXAMPLE]: `-fw R1,R2,R3`",
     )
     parser.add_argument(
         "-m",
@@ -257,15 +346,8 @@ def cli():
         "--mismatch",
         required=False,
         type=int,
-        default=2,
-        help="If fuzzy, how many mismatches are allowed? [DEFAULT]: 2",
-    )
-    parser.add_argument(
-        "-bclen",
-        "--barcode_length",
-        required=True,
-        type=int,
-        help="Length of barcode used",
+        default=1,
+        help="If fuzzy, how many mismatches are allowed? [DEFAULT]: 1",
     )
     parser.add_argument(
         "-bc_start",
@@ -299,24 +381,40 @@ def cli():
         default=2500,
         help="Maximum length of read",
     )
+    parser.add_argument(
+        "-min_reads",
+        "--minimum_reads",
+        required=False,
+        type=int,
+        default=100,
+        help="Minimum amount of reads to keep the barcode",
+    )
+    parser.add_argument(
+        "-par",
+        "--parquet",
+        required=False,
+        default=True,
+        help="Save all demuxed files as parquet file?",
+        action=argparse.BooleanOptionalAction,
+    )
 
     args = parser.parse_args()
     command = "\nnanomux \n" + "".join(f"{k}: {v}\n" for k, v in vars(args).items())
     print_green(command)
 
     main(
-        fastq=args.fastq,
+        command=command,
+        fastx=args.fastx,
         output=args.output,
-        barcode=args.barcode,
-        forward=args.forward,
-        reverse=args.reverse,
-        mode=args.mode,
-        mismatch=args.mismatch,
-        barcode_length=args.barcode_length,
+        barcodes=args.barcodes,
         barcode_start=args.barcode_start,
         barcode_end=args.barcode_end,
         read_len_min=args.read_len_min,
         read_len_max=args.read_len_max,
+        min_reads=args.minimum_reads,
+        parquet=args.parquet,
+        mode=args.mode,
+        mismatch=args.mismatch,
     )
 
 
@@ -332,108 +430,116 @@ def folder_exists(folder):
         sys.exit(1)
 
 
-def process_fastx_file(fastx, read_len_min, read_len_max):
-    fastq_df = fastx_file_to_df(fastx)
-    print_blue(f"Number of raw sequences in {fastx}: {fastq_df.shape[0]}")
-
-    filter_16s_reads_by_len_fun = partial(
-        filter_16s_reads_by_len, start=read_len_min, stop=read_len_max
-    )
-    fastq_df = fastq_df.pipe(filter_16s_reads_by_len_fun)
-
-    if fastq_df.shape[0] == 0:
-        print_fail("No reads left after filtering for lenght")
-        sys.exit(1)
-
-    print_blue(
-        f"Number of sequences between {read_len_min}bp and {read_len_max}bp: {fastq_df.shape[0]}"
-    )
-
-    return fastq_df
-
-
-def process_barcodes(barcode, forward, reverse):
-    if forward == "" and reverse == "":
-        return pd.read_csv(barcode)
-
+def read_valid_csv(csv):
     try:
-        barcodes_raw = pd.read_csv(barcode)
+        df = pl.read_csv(csv).with_columns(bc_len=pl.col("fwd_barcode").str.len_bytes())
+        return df
     except:
-        print_fail(f"{barcode} is not a valid .csv file")
+        print_fail(f"{csv} cannot be read!")
         sys.exit(1)
-
-    try:
-        fwd_barcodes = forward.split(",")
-    except:
-        print_fail(f"{forward} are not valid.")
-        sys.exit(1)
-
-    try:
-        rv_barcodes = reverse.split(",")
-    except:
-        print_fail(f"{reverse} are not valid.")
-        sys.exit(1)
-
-    try:
-        barcodes_filtered = used_barcodes(barcodes_raw, fwd_barcodes, rv_barcodes)
-    except:
-        print_fail("Something went wrong when filtering for barcodes.")
-        sys.exit(1)
-
-    if barcodes_filtered.shape[0] == 0:
-        print_fail("No barcodes left after filtering for barcodes.")
-        sys.exit(1)
-
-    return barcodes_filtered
 
 
 def main(
-    fastq,
+    command,
+    fastx,
     output,
-    barcode,
-    forward,
-    reverse,
-    mode,
-    mismatch,
-    barcode_length,
+    barcodes,
     barcode_start,
     barcode_end,
     read_len_min,
     read_len_max,
+    min_reads,
+    parquet,
+    mode,
+    mismatch,
 ):
-    print_green(f"Running nanomux on {fastq}!")
+    print_green(f"Running nanomux on {fastx}!")
 
-    file_exists(fastq)
+    file_exists(fastx)
     folder_exists(output)
     make_dir(output)
 
-    print_green("Processing fastq")
-    fastq_df = process_fastx_file(fastq, read_len_min, read_len_max)
+    # read in data
+    barcodes = read_valid_csv(barcodes)
+    print_green(f"Processing fastx file: {fastx}")
+    fastx_df_raw = fastx_file_to_df(fastx)
 
-    print_green("Processing barcodes")
-    barcodes_filtered = process_barcodes(barcode, forward, reverse)
+    print_blue(f"Number of raw sequences in {fastx}: {fastx_df_raw.shape[0]}")
 
-    duplex_barcode_function = (
-        partial(find_duplex_barcodes_greedy, bc_start=barcode_start, bc_end=barcode_end)
-        if mode == "greedy"
-        else partial(
-            find_duplex_barcodes_fuzzy,
-            allowed_mismatches=mismatch,
-            bc_start=barcode_start,
-            bc_end=barcode_end,
+    # filtering
+    fastx_df = filter_16s_reads_by_len(fastx_df_raw, read_len_min, read_len_max)
+
+    print_blue(
+        f"Number of sequences between {read_len_min}bp and {read_len_max}bp: {fastx_df.shape[0]}"
+    )
+
+    # demuxing barcodes
+    print_green(f"Searching for barcodes with mode: {mode}")
+    if mode == "greedy":
+        demuxed_df = search_barcodes_greedy(
+            fastx_df,
+            barcodes,
+            min_reads,
+            output,
+            read_len_min,
+            barcode_start,
+            barcode_end,
         )
-    )
-
-    trim_barcodes_fun = partial(trim_barcodes, BC_LEN=barcode_length)
-    demuxed_df = demux_all_samples(
-        fastq_df, barcodes_filtered, duplex_barcode_function, trim_barcodes_fun
-    )
+    elif mode == "fuzzy":
+        demuxed_df = search_barcodes_fuzzy(
+            fastx_df,
+            barcodes,
+            min_reads,
+            output,
+            read_len_min,
+            barcode_start,
+            barcode_end,
+            mismatch,
+        )
+    else:
+        print_fail("Mode must be `fuzzy` or `greedy`")
+        sys.exit(1)
 
     print_blue(f"Number of sequences with barcodes: {demuxed_df.shape[0]}")
+    print_blue(f"Number of barcodes found: {demuxed_df['bc_name'].n_unique()}")
+    print_blue(
+        f"Number of reads found in more than one sample: {demuxed_df.filter(demuxed_df['name'].is_duplicated()).shape[0]}"
+    )
 
-    print_green(f"Saving fasta files into: {output}")
-    write_fastx_from_all_sample_in_df(demuxed_df, output)
+    if parquet:
+        parquet_out = f"{output}/{Path(fastx).stem}.parquet"
+        print_green(f"Saving parquet file to {parquet_out}")
+        demuxed_df.write_parquet(parquet_out)
+
+    print_green(f"Fasta files saved to: {output}")
     print_green("Nanomux is done!")
+
+    with open(f"{output}/nanomux.log", "a+") as f:
+
+        now = datetime.now()
+        date_string = f"{now.year}-{now.month:02d}-{now.day:02d}"
+        print(f"Date: {date_string}", file=f, end="\n")
+        print("Command:", file=f, end="\n")
+        print(command, file=f, end="\n")
+        print("", file=f, end="\n")
+        print("Demux information:", file=f, end="\n")
+        print(f"Number of raw sequences: {fastx_df_raw.shape[0]}", file=f, end="\n")
+        print(f"Number of filtered sequences: {fastx_df.shape[0]}", file=f, end="\n")
+        print(
+            f"Number of sequences with barcodes: {demuxed_df.shape[0]}",
+            file=f,
+            end="\n",
+        )
+        print(
+            f"Number of reads found in more than one sample: {demuxed_df.filter(demuxed_df['name'].is_duplicated()).shape[0]}",
+            file=f,
+            end="\n",
+        )
+        print(
+            f"Number of barcodes found: {demuxed_df['bc_name'].n_unique()}",
+            file=f,
+            end="\n",
+        )
 
 
 if __name__ == "__main__":

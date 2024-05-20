@@ -10,7 +10,10 @@ $ pip install nanomux
 ```console
 $ nanomux -h
 ```
-
-## TODO
-* add https://github.com/abstractqqq/polars_ds_extension/blob/main/examples/basics.ipynb
-Look into Jaro-Winkler - apples
+## Barcode csv
+The `.csv` file with barcodes must have the **following** shape:
+```csv
+name,fwd_barcode,rvs_barcode
+sample1,ATCGTAGCGA,GTCAGCGTTG
+sample2,AGTTCGATTG,GATGCGATTT
+```
