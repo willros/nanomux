@@ -1,5 +1,5 @@
 # nanomux
-Demultiplex your nanopore reads
+Demultiplex your dual barcodeded 16s Nanopore reads. Uses either `greedy` or `fuzzy` search to identify the barcodes.
 
 ## Install:
 ```console
