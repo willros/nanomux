@@ -19,7 +19,7 @@ setuptools.setup(
     python_requires=">=3.9",
     install_requires=[
         "pyfastx==2.0.2",
-        "polars",
+        "polars==0.20.22",
         "polars-ds==0.4.4",
         "pyarrow"
     ],
