@@ -241,21 +241,30 @@ def search_barcodes_greedy(
 ) -> pl.DataFrame:
     samples = []
     for x in barcodes.iter_rows(named=True):
-        sample = find_barcodes_greedy(
-            df,
-            x["fwd_barcode"],
-            x["rvs_barcode"],
-            bc_start,
-            bc_end,
-            x["name"],
-            read_len_min,
-            x["bc_len"],
-            trim
-        )
+        barcodes = []
+        for chunk in df.iter_slices(n_rows = 10_00):
+            sample = find_barcodes_greedy(
+                chunk,
+                x["fwd_barcode"],
+                x["rvs_barcode"],
+                bc_start,
+                bc_end,
+                x["name"],
+                read_len_min,
+                x["bc_len"],
+                trim
+            )
+            
+            if sample is None:
+                continue
+            barcodes.append(sample)
+            
         # save the bc directly
-        if sample is None:
+        if len(barcodes) == 0:
             print_warning(f"No barcodes for {x['name']}")
             continue
+            
+        sample = pl.concat(barcodes)
         if sample.shape[0] < min_reads:
             print_warning(
                 f"Barcode: {x['name']}, only contained: {sample.shape[0]} reads. Filtering away."
@@ -288,37 +297,45 @@ def search_barcodes_fuzzy(
 ) -> pl.DataFrame:
     samples = []
 
-    bc_len = barcodes["bc_len"][0]
-
-    start = (
-        df.with_columns(sequence=pl.col("sequence").str.slice(bc_start, bc_end))
-        .with_columns(
-            kmer_start=pl.col("sequence").map_elements(
-                lambda x: make_kmer(x, bc_len), return_dtype=list[str]
-            )
-        )
-        .drop("sequence")
-        .explode("kmer_start")
-    )
-
     for x in barcodes.iter_rows(named=True):
-        sample = find_barcodes_fuzzy(
-            df,
-            start,
-            x["fwd_barcode"],
-            x["rvs_barcode"],
-            bc_start,
-            bc_end,
-            x["name"],
-            read_len_min,
-            bc_len,
-            allowed_mismatch,
-            trim,
-        )
-        # save the bc directly
-        if sample is None:
+        barcodes = []
+        for chunk in df.iter_slices(n_rows=10_000):
+            bc_len = x["bc_len"]
+
+            start = (
+                chunk.with_columns(sequence=pl.col("sequence").str.slice(bc_start, bc_end))
+                .with_columns(
+                    kmer_start=pl.col("sequence").map_elements(
+                        lambda seq: make_kmer(seq, bc_len), return_dtype=list[str]
+                    )
+                )
+                .drop("sequence")
+                .explode("kmer_start")
+            )
+
+            sample = find_barcodes_fuzzy(
+                chunk,
+                start,
+                x["fwd_barcode"],
+                x["rvs_barcode"],
+                bc_start,
+                bc_end,
+                x["name"],
+                read_len_min,
+                bc_len,
+                allowed_mismatch,
+                trim,
+            )
+
+            if sample is None:
+                continue
+            barcodes.append(sample)
+
+        if len(barcodes) == 0:
             print_warning(f"No barcodes for {x['name']}")
             continue
+
+        sample = pl.concat(barcodes)
         if sample.shape[0] < min_reads:
             print_warning(
                 f"Barcode: {x['name']}, only contained: {sample.shape[0]} reads. Filtering away."
@@ -330,6 +347,10 @@ def search_barcodes_fuzzy(
         write_fastx_from_df(sample, out_path)
 
         samples.append(sample)
+
+    if len(samples) == 0:
+        print_fail("No samples with barcodes could be found!")
+        sys.exit(1)
 
     return pl.concat(samples)
 
