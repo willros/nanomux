@@ -249,14 +249,15 @@ def search_barcodes_greedy(
             continue
 
         sample = pl.concat(barcodes)
+        n_reads = sample.shape[0]
         if sample.shape[0] < min_reads:
             print_warning(
-                f"Barcode: {x['name']}, only contained: {sample.shape[0]} reads. Filtering away."
+                f"Barcode: {x['name']}, only contained: {n_reads} reads. Filtering away."
             )
             continue
 
-        print_green(f"Barcode: {x['name']}, contained: {sample.shape[0]} reads")
-        out_path = f"{out_folder}/{x['name']}_nanomuxed.fq"
+        print_green(f"Barcode: {x['name']}, contained: {n_reads} reads")
+        out_path = f"{out_folder}/{x['name']}_{n_reads}_reads_nanomuxed.fq"
         write_fastx_from_df(sample, out_path)
 
         samples.append(sample)
@@ -306,14 +307,15 @@ def search_barcodes_fuzzy(
             continue
 
         sample = pl.concat(barcodes)
+        n_reads = sample.shape[0]
         if sample.shape[0] < min_reads:
             print_warning(
-                f"Barcode: {x['name']}, only contained: {sample.shape[0]} reads. Filtering away."
+                f"Barcode: {x['name']}, only contained: {n_reads} reads. Filtering away."
             )
             continue
 
-        print_green(f"Barcode: {x['name']}, contained: {sample.shape[0]} reads")
-        out_path = f"{out_folder}/{x['name']}_nanomuxed.fq"
+        print_green(f"Barcode: {x['name']}, contained: {n_reads} reads")
+        out_path = f"{out_folder}/{x['name']}_{n_reads}_reads_nanomuxed.fq"
         write_fastx_from_df(sample, out_path)
 
         samples.append(sample)
@@ -359,7 +361,7 @@ def cli():
         required=False,
         type=int,
         default=1,
-        choices=[1],
+        choices=[1, 2, 3],
         help="If fuzzy, how many mismatches are allowed? [DEFAULT]: 1",
     )
     parser.add_argument(
@@ -477,6 +479,7 @@ def main(
     mismatch,
     trim,
 ):
+    start_time = datetime.now()
     print_green(f"Running nanomux on {fastx}!")
 
     file_exists(fastx)
@@ -539,6 +542,9 @@ def main(
 
     print_green(f"Fasta files saved to: {output}")
     print_green("Nanomux is done!")
+    
+    end_time = datetime.now()
+    time_diff = end_time - start_time
 
     with open(f"{output}/nanomux.log", "a+") as f:
 
@@ -565,6 +571,11 @@ def main(
             f"Number of barcodes found: {demuxed_df['bc_name'].n_unique()}",
             file=f,
             end="\n",
+        )
+        print(
+            f"Time runned: {time_diff}",
+            file=f,
+            end="\n"
         )
 
 
