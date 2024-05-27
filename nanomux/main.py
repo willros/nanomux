@@ -76,7 +76,7 @@ def fuzzysearch(seq, barcode, mismatch):
 
 
 def find_barcodes_greedy(
-    df, fw, rv, bc_start, bc_end, bc_name, read_len_min, bc_len, trim
+    df, fw, rv, bc_start, bc_end, bc_name, read_len_min, bc_len, trim, mismatch=None,
 ):
     fw_rv = (
         df.with_columns(fw=pl.col("sequence").str.find(fw))
@@ -220,56 +220,8 @@ def write_fa_from_parquet(parquet, out_folder):
         write_fastx_from_df(bc, out_file)
 
 
-def search_barcodes_greedy(
-    df, barcodes, min_reads, out_folder, read_len_min, bc_start, bc_end, trim
-) -> pl.DataFrame:
-    samples = []
-    for x in barcodes.iter_rows(named=True):
-        barcodes = []
-        for chunk in df.iter_slices(n_rows=10_00):
-            sample = find_barcodes_greedy(
-                chunk,
-                x["fwd_barcode"],
-                x["rvs_barcode"],
-                bc_start,
-                bc_end,
-                x["name"],
-                read_len_min,
-                x["bc_len"],
-                trim,
-            )
 
-            if sample is None:
-                continue
-            barcodes.append(sample)
-
-        # save the bc directly
-        if len(barcodes) == 0:
-            print_warning(f"No barcodes for {x['name']}")
-            continue
-
-        sample = pl.concat(barcodes)
-        n_reads = sample.shape[0]
-        if sample.shape[0] < min_reads:
-            print_warning(
-                f"Barcode: {x['name']}, only contained: {n_reads} reads. Filtering away."
-            )
-            continue
-
-        print_green(f"Barcode: {x['name']}, contained: {n_reads} reads")
-        out_path = f"{out_folder}/{x['name']}_{n_reads}_reads_nanomuxed.fq"
-        write_fastx_from_df(sample, out_path)
-
-        samples.append(sample)
-
-    if len(samples) == 0:
-        print_fail("No samples with barcodes could be found!")
-        sys.exit(1)
-
-    return pl.concat(samples)
-
-
-def search_barcodes_fuzzy(
+def search_barcodes(
     df,
     barcodes,
     min_reads,
@@ -279,12 +231,13 @@ def search_barcodes_fuzzy(
     bc_end,
     trim,
     mismatch,
+    search_barcode_func,
 ) -> pl.DataFrame:
     samples = []
     for x in barcodes.iter_rows(named=True):
         barcodes = []
         for chunk in df.iter_slices(n_rows=10_00):
-            sample = find_barcodes_fuzzy(
+            sample = search_barcode_func(
                 chunk,
                 x["fwd_barcode"],
                 x["rvs_barcode"],
@@ -502,33 +455,29 @@ def main(
 
     # demuxing barcodes
     print_green(f"Searching for barcodes with mode: {mode}")
+    
     if mode == "greedy":
-        demuxed_df = search_barcodes_greedy(
-            fastx_df,
-            barcodes,
-            min_reads,
-            output,
-            read_len_min,
-            barcode_start,
-            barcode_end,
-            trim,
-        )
+        search_barcode_func = find_barcodes_greedy
     elif mode == "fuzzy":
-        demuxed_df = search_barcodes_fuzzy(
-            fastx_df,
-            barcodes,
-            min_reads,
-            output,
-            read_len_min,
-            barcode_start,
-            barcode_end,
-            trim,
-            mismatch,
-        )
+        search_barcode_func = find_barcodes_fuzzy
     else:
         print_fail("Mode must be `fuzzy` or `greedy`")
         sys.exit(1)
+    
 
+    demuxed_df = search_barcodes(
+        fastx_df,
+        barcodes,
+        min_reads,
+        output,
+        read_len_min,
+        barcode_start,
+        barcode_end,
+        trim,
+        mismatch,
+        search_barcode_func,
+    )
+        
     print_blue(f"Number of sequences with barcodes: {demuxed_df.shape[0]}")
     print_blue(f"Number of barcodes found: {demuxed_df['bc_name'].n_unique()}")
     print_blue(
