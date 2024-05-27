@@ -20,8 +20,7 @@ setuptools.setup(
     install_requires=[
         "pyfastx==2.0.2",
         "polars==0.20.22",
-        "polars-ds==0.4.4",
-        "pyarrow"
+        "fuzzysearch==0.7.3",
     ],
     entry_points={"console_scripts": ["nanomux=nanomux.main:cli"]},
 )
