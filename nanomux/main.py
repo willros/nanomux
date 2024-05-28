@@ -486,7 +486,16 @@ def main(
     print_blue(
         f"Number of reads found in more than one sample: {demuxed_df.filter(demuxed_df['name'].is_duplicated()).shape[0]}"
     )
+    
+    # csv with number of reads per barcode
+    number_reads_per_bc = (
+        demuxed_df
+        .group_by("bc_name")
+        .agg(count=pl.col("name").count())
+    )
+    number_reads_per_bc.write_csv(f"{output}/{Path(fastx).stem}_number_bc.csv")
 
+    # save the whole df as parquet
     if parquet:
         parquet_out = f"{output}/{Path(fastx).stem}.parquet"
         print_green(f"Saving parquet file to {parquet_out}")
