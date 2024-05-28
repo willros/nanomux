@@ -270,8 +270,11 @@ def search_barcodes(
         print_green(f"Barcode: {x['name']}, contained: {n_reads} reads")
         out_path = f"{out_folder}/{x['name']}_{n_reads}_reads_nanomuxed.fq"
         write_fastx_from_df(sample, out_path)
-
+        
         samples.append(sample)
+        
+        # update df and remove the already found barcodes
+        df = df.filter(~pl.col("name").is_in(sample["name"]))
 
     if len(samples) == 0:
         print_fail("No samples with barcodes could be found!")
