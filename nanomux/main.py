@@ -34,16 +34,21 @@ def print_blue(text):
 
 
 def fastx_file_to_df(fastx_file: str) -> pl.DataFrame:
-    fastx = pyfastx.Fastx(fastx_file)
-    reads = list(zip(*[[x[0], x[1], x[2]] for x in fastx]))
+    try:
+        fastx = pyfastx.Fastx(fastx_file)
+        reads = list(zip(*[[x[0], x[1], x[2]] for x in fastx]))
 
-    df = (
-        pl.DataFrame({"name": reads[0], "sequence": reads[1], "qual": reads[2]})
-        .with_columns(read_len=pl.col("sequence").str.len_bytes())
-        .sort(by="read_len", descending=True)
-    )
+        df = (
+            pl.DataFrame({"name": reads[0], "sequence": reads[1], "qual": reads[2]})
+            .with_columns(read_len=pl.col("sequence").str.len_bytes())
+            .sort(by="read_len", descending=True)
+        )
 
-    return df
+        return df
+
+    except Exception as e:
+        print_fail(f"Fastx file could not be read: {fastx_file}, because of {e}")
+        sys.exit(1)
 
 
 def filter_reads_by_len(df, start, stop):
