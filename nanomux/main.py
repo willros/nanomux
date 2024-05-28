@@ -317,7 +317,7 @@ def cli():
         required=False,
         type=int,
         default=1,
-        choices=[1, 2, 3],
+        choices=[1, 2, 3, 4],
         help="If fuzzy, how many mismatches are allowed? [DEFAULT]: 1",
     )
     parser.add_argument(
