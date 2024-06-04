@@ -22,12 +22,13 @@ sample2,AGTTCGATTG,GATGCGATTT
 
 ## Usage
 ```console
-usage: nanomux [-h] -f FASTX -o OUTPUT -b BARCODES -m {greedy,fuzzy} [-mm {1}] [-bc_start BARCODE_START] [-bc_end BARCODE_END] [-len_min READ_LEN_MIN] [-len_max READ_LEN_MAX]
-               [-min_reads MINIMUM_READS] [-par | --parquet | --no-parquet] [-t | --trim | --no-trim]
+usage: nanomux [-h] -f FASTX -o OUTPUT -b BARCODES -m {greedy,fuzzy} [-mm {1,2,3,4}] [-bc_start BARCODE_START] [-bc_end BARCODE_END] [-len_min_start READ_LEN_MIN_START]
+               [-len_min_after READ_LEN_MIN_AFTER] [-len_max READ_LEN_MAX] [-min_reads MINIMUM_READS] [-par | --parquet | --no-parquet] [-t | --trim | --no-trim]
+               [-nin | --number_in_name | --no-number_in_name]
 
 Demultiplex your Nanopore reads!
 
-optional arguments:
+options:
   -h, --help            show this help message and exit
   -f FASTX, --fastx FASTX
                         Fastx file
@@ -37,14 +38,16 @@ optional arguments:
                         .csv files with barcodes
   -m {greedy,fuzzy}, --mode {greedy,fuzzy}
                         Mode to find barcodes. Either 'greedy' or 'fuzzy'
-  -mm {1}, --mismatch {1}
+  -mm {1,2,3,4}, --mismatch {1,2,3,4}
                         If fuzzy, how many mismatches are allowed? [DEFAULT]: 1
   -bc_start BARCODE_START, --barcode_start BARCODE_START
                         Where do the barcode start in the read?
   -bc_end BARCODE_END, --barcode_end BARCODE_END
                         Where do the barcode end in the read?
-  -len_min READ_LEN_MIN, --read_len_min READ_LEN_MIN
-                        Minimum length of read
+  -len_min_start READ_LEN_MIN_START, --read_len_min_start READ_LEN_MIN_START
+                        Minimum length of read before searching for barcodes
+  -len_min_after READ_LEN_MIN_AFTER, --read_len_min_after READ_LEN_MIN_AFTER
+                        Minimum length of read after finding barcodes
   -len_max READ_LEN_MAX, --read_len_max READ_LEN_MAX
                         Maximum length of read
   -min_reads MINIMUM_READS, --minimum_reads MINIMUM_READS
@@ -53,6 +56,8 @@ optional arguments:
                         Save all demuxed files as parquet file? (default: True)
   -t, --trim, --no-trim
                         Trim the reads? (default: False)
+  -nin, --number_in_name, --no-number_in_name
+                        Number of reads in the fastq name? (default: False)
 ```
 
 ## Example
@@ -61,9 +66,15 @@ nanomux -f tests/test.fastq -o 240524_TEST_greedy -b tests/barcodes_with_flankin
 ```
 
 
-## Changlog
+## Changelog
 
 ### 240524
 * Trim option
 * Capped mismatch to 1
 * Chunked search for barcodes to limit memory consumtion
+
+
+## 240603
+* Minimun length before finding barcodes and after trimming found barcodes
+* Reports barcodes with no reads assigned to it in the summary csv-file
+* Option to keep number of reads in fastq name or not

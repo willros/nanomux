@@ -81,7 +81,7 @@ def fuzzysearch(seq, barcode, mismatch):
 
 
 def find_barcodes_greedy(
-    df, fw, rv, bc_start, bc_end, bc_name, read_len_min, bc_len, trim, mismatch=None,
+    df, fw, rv, bc_start, bc_end, bc_name, read_len_min_after, bc_len, trim, mismatch=None,
 ):
     fw_rv = (
         df.with_columns(fw=pl.col("sequence").str.find(fw))
@@ -119,7 +119,7 @@ def find_barcodes_greedy(
             .drop(["fw", "rv"])
             .sort(by="read_len", descending=True)
             .with_columns(bc_name=pl.lit(bc_name))
-            .filter(pl.col("read_len") > read_len_min)
+            .filter(pl.col("read_len") > read_len_min_after)
             .with_columns(n_reads=pl.col("bc_name").len().over("bc_name"))
         )
     else:
@@ -128,7 +128,6 @@ def find_barcodes_greedy(
             .drop(["fw", "rv"])
             .sort(by="read_len", descending=True)
             .with_columns(bc_name=pl.lit(bc_name))
-            .filter(pl.col("read_len") > read_len_min)
             .with_columns(n_reads=pl.col("bc_name").len().over("bc_name"))
         )
 
@@ -136,7 +135,7 @@ def find_barcodes_greedy(
 
 
 def find_barcodes_fuzzy(
-    df, fw, rv, bc_start, bc_end, bc_name, read_len_min, bc_len, trim, mismatch
+    df, fw, rv, bc_start, bc_end, bc_name, read_len_min_after, bc_len, trim, mismatch
 ):
     fw_rv = (
         df.with_columns(
@@ -190,7 +189,7 @@ def find_barcodes_fuzzy(
             .drop(["fw", "rv"])
             .sort(by="read_len", descending=True)
             .with_columns(bc_name=pl.lit(bc_name))
-            .filter(pl.col("read_len") > read_len_min)
+            .filter(pl.col("read_len") > read_len_min_after)
             .with_columns(n_reads=pl.col("bc_name").len().over("bc_name"))
         )
     else:
@@ -199,7 +198,6 @@ def find_barcodes_fuzzy(
             .drop(["fw", "rv"])
             .sort(by="read_len", descending=True)
             .with_columns(bc_name=pl.lit(bc_name))
-            .filter(pl.col("read_len") > read_len_min)
             .with_columns(n_reads=pl.col("bc_name").len().over("bc_name"))
         )
 
@@ -231,12 +229,13 @@ def search_barcodes(
     barcodes,
     min_reads,
     out_folder,
-    read_len_min,
+    read_len_min_after,
     bc_start,
     bc_end,
     trim,
     mismatch,
     search_barcode_func,
+    number_in_name,
 ) -> pl.DataFrame:
     samples = []
     for x in barcodes.iter_rows(named=True):
@@ -249,7 +248,7 @@ def search_barcodes(
                 bc_start,
                 bc_end,
                 x["name"],
-                read_len_min,
+                read_len_min_after,
                 x["bc_len"],
                 trim,
                 mismatch,
@@ -273,11 +272,18 @@ def search_barcodes(
             continue
 
         print_green(f"Barcode: {x['name']}, contained: {n_reads} reads")
-        out_path = f"{out_folder}/{x['name']}_{n_reads}_reads_nanomuxed.fq"
+        
+        # read number in name or not
+        if number_in_name:
+            out_path = f"{out_folder}/{x['name']}_{n_reads}_reads_nanomuxed.fq"
+        else:
+            out_path = f"{out_folder}/{x['name']}_nanomuxed.fq"
+            
         write_fastx_from_df(sample, out_path)
         
         samples.append(sample)
         
+        # TODO: keep this or not? Runs the risk that a sample could be falsely assigned without being reported
         # update df and remove the already found barcodes
         df = df.filter(~pl.col("name").is_in(sample["name"]))
 
@@ -342,12 +348,20 @@ def cli():
         help="Where do the barcode end in the read?",
     )
     parser.add_argument(
-        "-len_min",
-        "--read_len_min",
+        "-len_min_start",
+        "--read_len_min_start",
         required=False,
         type=int,
         default=600,
-        help="Minimum length of read",
+        help="Minimum length of read before searching for barcodes",
+    )
+    parser.add_argument(
+        "-len_min_after",
+        "--read_len_min_after",
+        required=False,
+        type=int,
+        default=600,
+        help="Minimum length of read after finding barcodes",
     )
     parser.add_argument(
         "-len_max",
@@ -381,6 +395,14 @@ def cli():
         help="Trim the reads?",
         action=argparse.BooleanOptionalAction,
     )
+    parser.add_argument(
+        "-nin",
+        "--number_in_name",
+        required=False,
+        default=False,
+        help="Number of reads in the fastq name?",
+        action=argparse.BooleanOptionalAction,
+    )
 
     args = parser.parse_args()
 
@@ -394,13 +416,15 @@ def cli():
         barcodes=args.barcodes,
         barcode_start=args.barcode_start,
         barcode_end=args.barcode_end,
-        read_len_min=args.read_len_min,
+        read_len_min_start=args.read_len_min_start,
+        read_len_min_after=args.read_len_min_after,
         read_len_max=args.read_len_max,
         min_reads=args.minimum_reads,
         parquet=args.parquet,
         mode=args.mode,
         mismatch=args.mismatch,
         trim=args.trim,
+        number_in_name=args.number_in_name,
     )
 
 
@@ -432,13 +456,15 @@ def main(
     barcodes,
     barcode_start,
     barcode_end,
-    read_len_min,
+    read_len_min_start,
+    read_len_min_after,
     read_len_max,
     min_reads,
     parquet,
     mode,
     mismatch,
     trim,
+    number_in_name,
 ):
     start_time = datetime.now()
     print_green(f"Running nanomux on {fastx}!")
@@ -455,10 +481,10 @@ def main(
     print_blue(f"Number of raw sequences in {fastx}: {fastx_df_raw.shape[0]}")
 
     # filtering
-    fastx_df = filter_reads_by_len(fastx_df_raw, read_len_min, read_len_max)
+    fastx_df = filter_reads_by_len(fastx_df_raw, read_len_min_start, read_len_max)
 
     print_blue(
-        f"Number of sequences between {read_len_min}bp and {read_len_max}bp: {fastx_df.shape[0]}"
+        f"Number of sequences between {read_len_min_start}bp and {read_len_max}bp: {fastx_df.shape[0]}"
     )
 
     # demuxing barcodes
@@ -478,12 +504,13 @@ def main(
         barcodes,
         min_reads,
         output,
-        read_len_min,
+        read_len_min_after,
         barcode_start,
         barcode_end,
         trim,
         mismatch,
         search_barcode_func,
+        number_in_name,
     )
         
     print_blue(f"Number of sequences with barcodes: {demuxed_df.shape[0]}")
@@ -498,7 +525,20 @@ def main(
         .group_by("bc_name")
         .agg(count=pl.col("name").count())
     )
-    number_reads_per_bc.write_csv(f"{output}/{Path(fastx).stem}_number_bc.csv")
+    
+    # add the barcodes that did not get any reads assigned to them
+    bc_with_reads = number_reads_per_bc["bc_name"].to_list()
+    bc_without_reads = (
+        barcodes
+        .filter(~pl.col("name").is_in(bc_with_reads))
+        .select(bc_name=pl.col("name"))
+        .with_columns(count=0)
+        # TODO: do i have the do the casting?
+        .with_columns(pl.col("count").cast(pl.UInt32))
+    )
+    with_and_without_reads = pl.concat([number_reads_per_bc, bc_without_reads])
+    
+    with_and_without_reads.write_csv(f"{output}/{Path(fastx).stem}_number_bc.csv")
 
     # save the whole df as parquet
     if parquet:
