@@ -5,6 +5,7 @@ import sys
 import argparse
 from datetime import datetime
 from fuzzysearch import find_near_matches
+import gzip
 
 
 class bcolors:
@@ -205,13 +206,12 @@ def find_barcodes_fuzzy(
 
 
 def write_fastx_from_df(df, out_file):
-    with open(out_file, "a+") as f:
+    with gzip.open(out_file, "wt") as f:  
         for x in df.iter_rows(named=True):
             print(f"@{x['name']}", file=f)
             print(f"{x['sequence']}", file=f)
             print("+", file=f)
             print(f"{x['qual']}", file=f)
-
 
 def write_fa_from_parquet(parquet, out_folder):
     make_dir(out_folder)
@@ -277,7 +277,7 @@ def search_barcodes(
         if number_in_name:
             out_path = f"{out_folder}/{x['name']}_{n_reads}_reads_nanomuxed.fq"
         else:
-            out_path = f"{out_folder}/{x['name']}_nanomuxed.fq"
+            out_path = f"{out_folder}/{x['name']}_nanomuxed.fq.gz"
             
         write_fastx_from_df(sample, out_path)
         
@@ -391,7 +391,7 @@ def cli():
         "-t",
         "--trim",
         required=False,
-        default=False,
+        default=True,
         help="Trim the reads?",
         action=argparse.BooleanOptionalAction,
     )
