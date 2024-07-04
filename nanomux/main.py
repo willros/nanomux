@@ -84,26 +84,28 @@ def fuzzysearch(seq, barcode, mismatch):
 def find_barcodes_greedy(
     df, fw, rv, bc_start, bc_end, bc_name, read_len_min_after, read_len_max_after, bc_len, trim, mismatch=None,
 ):
+    
+    
     fw_rv = (
-        df.with_columns(fw=pl.col("sequence").str.find(fw))
-        .filter(pl.col("fw").is_between(bc_start, bc_end))
-        .with_columns(rv=pl.col("sequence").str.find(revcomp(rv)))
-        .filter(
-            pl.col("rv").is_between(
-                pl.col("read_len") - bc_start - bc_end, pl.col("read_len") - bc_start
-            )
-        )
+        df.with_columns(fw=pl.col("read_start").str.find(fw))
+        .filter(pl.col("fw").is_not_null())
+        # update the find position
+        .with_columns(fw=pl.col("fw") + bc_start)
+        .with_columns(rv=pl.col("read_end").str.find(revcomp(rv)))
+        .filter(pl.col("rv").is_not_null())
+        # update the find position
+        .with_columns(rv=pl.col("rv") + (pl.col("read_len") - bc_start - bc_end))
     )
 
     rv_fw = (
-        df.with_columns(fw=pl.col("sequence").str.find(rv))
-        .filter(pl.col("fw").is_between(bc_start, bc_end))
-        .with_columns(rv=pl.col("sequence").str.find(revcomp(fw)))
-        .filter(
-            pl.col("rv").is_between(
-                pl.col("read_len") - bc_start - bc_end, pl.col("read_len") - bc_start
-            )
-        )
+        df.with_columns(fw=pl.col("read_start").str.find(rv))
+        .filter(pl.col("fw").is_not_null())
+        .filter(pl.col("fw").is_not_null())
+        # update the find position
+        .with_columns(rv=pl.col("read_end").str.find(revcomp(fw)))
+        .filter(pl.col("rv").is_not_null())
+        # update the find position
+        .with_columns(rv=pl.col("rv") + (pl.col("read_len") - bc_start - bc_end))
     )
 
     both = pl.concat([fw_rv, rv_fw]).pipe(drop_and_print_duplicates)
@@ -111,13 +113,12 @@ def find_barcodes_greedy(
         return None
 
     if trim:
-        new_seq = both.map_rows(lambda x: x[1][x[4] + bc_len : x[5]])
-        new_qual = both.map_rows(lambda x: x[2][x[4] + bc_len : x[5]])
+        new_seq = both.map_rows(lambda x: x[1][x[6] + bc_len : x[7]])
+        new_qual = both.map_rows(lambda x: x[2][x[6] + bc_len : x[7]])
         barcodes = (
             both.with_columns(sequence=new_seq["map"])
             .with_columns(qual=new_qual["map"])
             .with_columns(read_len=pl.col("sequence").str.len_bytes())
-            .drop(["fw", "rv"])
             .sort(by="read_len", descending=True)
             .with_columns(bc_name=pl.lit(bc_name))
             .filter(pl.col("read_len") > read_len_min_after)
@@ -127,54 +128,55 @@ def find_barcodes_greedy(
     else:
         barcodes = (
             both.with_columns(read_len=pl.col("sequence").str.len_bytes())
-            .drop(["fw", "rv"])
             .sort(by="read_len", descending=True)
             .with_columns(bc_name=pl.lit(bc_name))
             .with_columns(n_reads=pl.col("bc_name").len().over("bc_name"))
         )
 
-    return barcodes
+    return barcodes.drop(["fw", "rv", "read_start", "read_end"])
 
 
 def find_barcodes_fuzzy(
     df, fw, rv, bc_start, bc_end, bc_name, read_len_min_after, read_len_max_after, bc_len, trim, mismatch
 ):
+    
+    
     fw_rv = (
         df.with_columns(
-            fw=pl.col("sequence").map_elements(
+            fw=pl.col("read_start").map_elements(
                 lambda x: fuzzysearch(x, fw, mismatch), return_dtype=pl.Int32
             )
         )
-        .filter(pl.col("fw").is_between(bc_start, bc_end))
+        .filter(pl.col("fw") != -1)
+        # update the find position
+        .with_columns(fw=pl.col("fw") + bc_start)
         .with_columns(
-            rv=pl.col("sequence").map_elements(
+            rv=pl.col("read_end").map_elements(
                 lambda x: fuzzysearch(x, revcomp(rv), mismatch), return_dtype=pl.Int32
             )
         )
-        .filter(
-            pl.col("rv").is_between(
-                pl.col("read_len") - bc_start - bc_end, pl.col("read_len") - bc_start
-            )
-        )
+        .filter(pl.col("rv") != -1)
+        # update the find position
+        .with_columns(rv=pl.col("rv") + (pl.col("read_len") - bc_start - bc_end))
     )
 
     rv_fw = (
         df.with_columns(
-            fw=pl.col("sequence").map_elements(
+            fw=pl.col("read_start").map_elements(
                 lambda x: fuzzysearch(x, rv, mismatch), return_dtype=pl.Int32
             )
         )
-        .filter(pl.col("fw").is_between(bc_start, bc_end))
+        .filter(pl.col("fw") != -1)
+        # update the find position
+        .with_columns(fw=pl.col("fw") + bc_start)
         .with_columns(
-            rv=pl.col("sequence").map_elements(
+            rv=pl.col("read_end").map_elements(
                 lambda x: fuzzysearch(x, revcomp(fw), mismatch), return_dtype=pl.Int32
             )
         )
-        .filter(
-            pl.col("rv").is_between(
-                pl.col("read_len") - bc_start - bc_end, pl.col("read_len") - bc_start
-            )
-        )
+        .filter(pl.col("rv") != -1)
+        # update the find position
+        .with_columns(rv=pl.col("rv") + (pl.col("read_len") - bc_start - bc_end))
     )
 
     both = pl.concat([fw_rv, rv_fw]).pipe(drop_and_print_duplicates)
@@ -182,13 +184,12 @@ def find_barcodes_fuzzy(
         return None
 
     if trim:
-        new_seq = both.map_rows(lambda x: x[1][x[4] + bc_len : x[5]])
-        new_qual = both.map_rows(lambda x: x[2][x[4] + bc_len : x[5]])
+        new_seq = both.map_rows(lambda x: x[1][x[6] + bc_len : x[7]])
+        new_qual = both.map_rows(lambda x: x[2][x[6] + bc_len : x[7]])
         barcodes = (
             both.with_columns(sequence=new_seq["map"])
             .with_columns(qual=new_qual["map"])
             .with_columns(read_len=pl.col("sequence").str.len_bytes())
-            .drop(["fw", "rv"])
             .sort(by="read_len", descending=True)
             .with_columns(bc_name=pl.lit(bc_name))
             .filter(pl.col("read_len") > read_len_min_after)
@@ -198,13 +199,12 @@ def find_barcodes_fuzzy(
     else:
         barcodes = (
             both.with_columns(read_len=pl.col("sequence").str.len_bytes())
-            .drop(["fw", "rv"])
             .sort(by="read_len", descending=True)
             .with_columns(bc_name=pl.lit(bc_name))
             .with_columns(n_reads=pl.col("bc_name").len().over("bc_name"))
         )
 
-    return barcodes
+    return barcodes.drop(["fw", "rv", "read_start", "read_end"])
 
 
 def write_fastx_from_df(df, out_file):
@@ -515,6 +515,15 @@ def main(
         sys.exit(1)
     
 
+    # update the fastx_df to contain read_start and read_end for searching barcodes
+    fastx_df = (
+        fastx_df
+        .with_columns(
+            read_start=pl.col("sequence").str.slice(offset=barcode_start, length=barcode_end),
+            read_end=pl.col("sequence").str.slice(offset=pl.col("read_len") - barcode_start - barcode_end, length=barcode_end),
+        )
+    )
+    
     demuxed_df = search_barcodes(
         fastx_df,
         barcodes,
