@@ -1,5 +1,5 @@
 # This repo is no longer maintained
-Go to my other project: [nanomux_c](https://github.com/willros/nanomux_c), which is implemented in c and is much faster compared to this.  
+Go to my other project: [nanoSweet](https://github.com/willros/nanosweet), which is implemented in c and is much faster compared to this.  
 
 # nanomux
 Demultiplex your dual barcodeded 16s Nanopore reads. Uses either `greedy` or `fuzzy` search to identify the barcodes.
